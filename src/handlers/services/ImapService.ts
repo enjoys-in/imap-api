@@ -1,4 +1,4 @@
- 
+
 import { ImapConfig } from '@/utils/interfaces/imap.interface';
 import { ImapFlow, ListResponse } from 'imapflow'
 import { ParsedMail, simpleParser } from 'mailparser';
@@ -17,7 +17,7 @@ export class ImapService {
                 pass: config.imap_password,
             }
         });
-        this.client.connect()
+
     }
     getConnection() { return this.client }
     async authenticate() {
@@ -99,7 +99,7 @@ export class ImapService {
         return {
             path: emails.path,
             name: mailbox,
-            delimiter: emails.delimeter,
+            delimiter: emails.delimiter,
             flags: emails.flags,
             specialUse: emails.specialUse,
             listed: emails.listed,
@@ -146,16 +146,16 @@ export class ImapService {
             })) {
 
                 checkForAttachments(message.bodyStructure);
-               
+
                 emails.push({
-                    message_id: message.envelope.messageId,
+                    message_id: message?.envelope?.messageId,
                     uid: message.uid,
                     type: message.bodyStructure?.type,
                     size: message.bodyStructure?.size,
-                    subject: message.envelope.subject,
-                    from: message.envelope.from?.map(f => f.address).join(', '),
-                    to: message.envelope.to?.map(t => t.address).join(', '),
-                    date: message.envelope.date,
+                    subject: message?.envelope?.subject,
+                    from: message?.envelope?.from?.map(f => f.address).join(', '),
+                    to: message?.envelope?.to?.map(t => t.address).join(', '),
+                    date: message?.envelope?.date,
                     flags: message.flags,
                     attachments
                 });
@@ -187,12 +187,26 @@ export class ImapService {
         return messages;
 
     }
-    async fetchMessageBody(mailbox: string = 'INBOX', uid: string) {
+    async fetchMessageBody(mailbox: string = 'INBOX', uid: string, is_parsed: boolean = false) {
         await this.client.mailboxOpen(mailbox);
         const source = await this.client.download(uid);
-        const parsed: ParsedMail = await simpleParser(source.content);
 
-        return parsed;
+        let mailchunks: any = null;
+
+        if (is_parsed) {
+            mailchunks = await simpleParser(source.content);
+        } else {
+            mailchunks = ''; // initialize as empty string
+            await new Promise((resolve, reject) => {
+                source.content.on('data', (chunk) => {
+                    mailchunks += chunk.toString();
+                });
+                source.content.on('end', resolve);
+                source.content.on('error', reject);
+            });
+        }
+
+        return mailchunks;
 
     }
     async fetchMessageHeaders() { }
@@ -227,7 +241,7 @@ export class ImapService {
             await this.client.messageMove(uids, targetMailbox);
         }
     }
-    async copyMailToOtherMailbox(uid: number[],destination:string) {
+    async copyMailToOtherMailbox(uid: number[], destination: string) {
         return this.client.messageCopy(uid, destination);
     }
 

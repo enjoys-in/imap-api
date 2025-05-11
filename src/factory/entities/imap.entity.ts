@@ -1,15 +1,23 @@
+import { __CONFIG__ } from '@/app/config';
+import { Security } from '@/utils/helpers/security';
 import {
     Entity,
     Column,
     PrimaryGeneratedColumn,
     CreateDateColumn,
     UpdateDateColumn,
+    BeforeInsert,
+    BeforeUpdate,
+    AfterLoad,
 } from 'typeorm';
+const securityService = new Security();
 
 @Entity('email_connections')
 export class ImapUsersEmailConnectionEntity {
-    @PrimaryGeneratedColumn('uuid')
-    id!: string;
+    private decrypted = false;
+
+    @PrimaryGeneratedColumn()
+    id!: number;
 
     @Column({ nullable: true })
     display_name!: string;
@@ -70,4 +78,27 @@ export class ImapUsersEmailConnectionEntity {
 
     @UpdateDateColumn({ name: 'updated_at' })
     updated_at!: Date;
+
+    @BeforeInsert()
+    @BeforeUpdate()
+    private encryptInfo() {       
+        this.imap_password = securityService.EncryptDecryptData(this.imap_password, __CONFIG__.SECRETS.APP_SECRET).EncryptToString();
+        this.smtp_password = securityService.EncryptDecryptData(this.smtp_password, __CONFIG__.SECRETS.APP_SECRET).EncryptToString();
+    }
+    @AfterLoad()
+    private decryptInfo(): void {
+     
+        if (!this.decrypted) {
+            this.imap_password = securityService
+                .EncryptDecryptData(this.imap_password, __CONFIG__.SECRETS.APP_SECRET)
+                .DecryptFromString();
+
+            this.smtp_password = securityService
+                .EncryptDecryptData(this.smtp_password, __CONFIG__.SECRETS.APP_SECRET)
+                .DecryptFromString();
+
+            this.decrypted = true;
+        }
+    }
+
 }

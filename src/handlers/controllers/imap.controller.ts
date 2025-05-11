@@ -1,13 +1,7 @@
 import type { Request, Response } from "express";
 import { ImapFactory } from "../factory/ImapFactory";
-
-
-
 import { StalwartService } from "../services/starlwartService";
 import imapBaseService from "../services/imapBaseService";
-
-
-
 import { InjectRepository } from "@/factory/typeorm";
 import { Cache } from "@/utils/services/redis/cacheService";
 import { ImapUsersEmailConnectionEntity } from "@/factory/entities/imap.entity";
@@ -17,6 +11,7 @@ import { __CONFIG__ } from "@/app/config";
 import { MiscellaneousHelper } from "@/utils/helpers/misc";
 import { REDIS_KEY_NAME } from "@/utils/interfaces/redisName.interface";
 import { ImapRequestBody } from "@/utils/interfaces/imap.interface";
+import { AppRoles } from "@/utils/interfaces/user.interface";
 
 
 // import { AuthService } from "@/handlers/services/AuthService";
@@ -54,14 +49,19 @@ class ImapController {
             }
 
             const config = imapBaseService.configDTO(isUser) as ImapRequestBody
-            // decrypt password
-            config.imap_password = securityService.EncryptDecryptData(config.imap_password, __CONFIG__.SECRETS.APP_SECRET).DecryptFromString();
-            config.smtp_password = securityService.EncryptDecryptData(config.smtp_password, __CONFIG__.SECRETS.APP_SECRET).DecryptFromString();
-            const userMailboxes = await imapBaseService.setupUser(config);
-            // const tokenBody = AuthService.createJwtPayLoad(isUser.id, req.body.imap_username, MiscellaneousHelper.getOnlyDomainFromEmail(req.body.imap_username), req.body.imap_username, req.body.imap_username.split("@")[0], AppRoles.USER)
 
-            // const signJWT = utils.signJWT(tokenBody, isUser.id)
-            // res.cookie("access_token", signJWT, { httpOnly: true, secure: __CONFIG__.APP.APP_ENV === "PROD", sameSite: "none", maxAge: 30 * 60 })
+            const userMailboxes = await imapBaseService.loginUser(config);
+
+
+            const signJWT = utils.signJWT({
+                mid: isUser.id,
+                email: req.body.imap_username,
+                domain_name: MiscellaneousHelper.getOnlyDomainFromEmail(req.body.imap_username),
+                role: AppRoles.USER
+            }, `${isUser.id}`)
+
+            res.cookie("access_token", signJWT, { httpOnly: true, secure: __CONFIG__.APP.APP_ENV === "PROD", sameSite: __CONFIG__.APP.APP_ENV === "PROD" ? "none" : "lax", maxAge: 3600 * 24 * 180 })
+
 
             res
                 .json({ message: "Authencticated", result: userMailboxes, success: true })
@@ -85,7 +85,7 @@ class ImapController {
     // @PublicRoute()
     async validateNewUser(req: Request<{}, {}, ImapRequestBody>, res: Response) {
         try {
-
+            const skipSMTP = req.query?.skipSMTP
             const isUser = await imapBaseService.getUserEmail(req.body.imap_username);
             if (isUser) {
                 res.status(200)
@@ -105,17 +105,27 @@ class ImapController {
                 smtp_password: pass,
                 smtp_username: user
             }
-
             config.imap_password = securityService.EncryptDecryptData(config.imap_password, __CONFIG__.SECRETS.APP_SECRET).DecryptFromString();
             config.smtp_password = securityService.EncryptDecryptData(config.smtp_password, __CONFIG__.SECRETS.APP_SECRET).DecryptFromString();
 
-            const userMailboxes = await imapBaseService.setupUser(config);
-            const createdUser = await imapBaseService.insertIntoDb(config);
-            // const tokenBody = AuthService.createJwtPayLoad(createdUser.id, req.body.imap_username, MiscellaneousHelper.getOnlyDomainFromEmail(req.body.imap_username), req.body.imap_username, req.body.imap_username.split("@")[0], AppRoles.USER)
-            // const signJWT = utils.signJWT(tokenBody, createdUser.id, "6m")
-            // res.cookie("access_token", signJWT, { httpOnly: true, secure: __CONFIG__.APP.APP_ENV === "PROD", sameSite: "none", maxAge: 30 * 60 })
+            const { imap_configured,
+                smtp_configured,
+                data, } = await imapBaseService.setupUser(config, skipSMTP as string | undefined);
+
+            const createdUser = await imapBaseService.insertIntoDb({
+                ...config,
+                imap_configured, smtp_configured
+            });
+
+            const signJWT = utils.signJWT({
+                mid: createdUser.id,
+                email: req.body.imap_username,
+                domain_name: MiscellaneousHelper.getOnlyDomainFromEmail(req.body.imap_username),
+                role: AppRoles.USER
+            }, `${createdUser.id}`)
+            res.cookie("access_token", signJWT, { httpOnly: true, secure: __CONFIG__.APP.APP_ENV === "PROD", sameSite: __CONFIG__.APP.APP_ENV === "PROD" ? "none" : "lax", maxAge: 3600 * 24 * 180 })
             res
-                .json({ message: "Authencticated", result: userMailboxes, success: true })
+                .json({ message: "Authencticated", result: data, success: true })
                 .end();
             return;
         } catch (error) {
@@ -146,7 +156,12 @@ class ImapController {
             const isUser = await imapBaseService.getUserEmail(req.user?.email as string);
 
             const config = imapBaseService.configDTO(isUser)
-            ImapFactory.getOrCreate(req.user?.email as string, config)
+            const imap = ImapFactory.getOrCreate(req.user?.email as string, config)
+            if (imap.getConnection().authenticated) {
+                res.json({ message: "OK", result: null, success: true }).end();
+                return
+            }
+            await imap.authenticate()
 
             res.json({ message: "OK", result: null, success: true }).end();
             return;
@@ -291,7 +306,8 @@ class ImapController {
                 throw new Error("Login required");
             }
             const emailBody = await imapService.fetchMessageBody(decodeURIComponent(selectedMailbox), uid);
-            res.json({ message: "OK", result: "ResponseDto.createMailResponse(emailBody)", success: true }).end();
+         
+            res.json({ message: "OK", result:emailBody, success: true }).end();
             return;
         } catch (error) {
             if (error instanceof Error) {
@@ -658,6 +674,7 @@ class ImapController {
      */
     async handleMailboxOperations(req: Request, res: Response) {
         try {
+
             const imapService = ImapFactory.getInstance(req.user?.email as string);
             if (!imapService) {
                 throw new Error("Login required");

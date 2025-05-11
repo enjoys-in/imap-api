@@ -7,6 +7,7 @@ import { ImapFactory } from "../factory/ImapFactory";
 import { InjectRepository } from "@/factory/typeorm";
 import { ImapUsersEmailConnectionEntity } from "@/factory/entities/imap.entity";
 import { ImapRequestBody } from "@/utils/interfaces/imap.interface";
+import { ListResponse } from "imapflow";
 
 
 
@@ -36,75 +37,79 @@ class ImapBaseService {
             smtp_password: config.smtp_password,
         }
     }
-    async setupUser(config: Omit<ImapRequestBody, "uses_separate_credentials">) {
+    async loginUser(config: ImapRequestBody) {
         try {
-            const imap = new ImapService({
-                imap_host: config.imap_host,
-                imap_port: config.imap_port,
-                imap_secure: config.imap_secure,
-                imap_username: config.imap_username,
-                imap_password: config.imap_password,
-            })
-            await imap.authenticate()
-            const data = await imap.syncFolders()
 
-            imap.getConnection().authenticated && await imap.logout()
-            const transport = createTransport({
-                host: config.smtp_host,
-                port: config.smtp_port,
-                secure: config.smtp_secure,
-                auth: {
-                    user: config.smtp_username,
-                    pass: config.smtp_password,
-                },
-                tls: {
-                    rejectUnauthorized: false,
-                },
-            });
-            const response = await transport.verify()
-            if (!response) {
-                throw new Error("SMTP connection failed");
-            }
+            const imap = ImapFactory.getOrCreate(config.imap_username, config)
+
+            !(imap.getConnection().authenticated) && (await imap.authenticate())
+            const data = await imap.syncFolders()
 
             return data
         } catch (error: any) {
-            throw new Error(error.message);
+            throw new Error(error)
         }
     }
-    async insertIntoDb(config: ImapRequestBody) {
+    async setupUser(config: Omit<ImapRequestBody, "uses_separate_credentials">, skipSMTP: string | undefined = undefined) {
+        let imap_configured: boolean = false
+        let smtp_configured: boolean = false
+        let data: any[] | null = null
+        try {
 
-        // Insert in DB and update first time setup status
+            const imap = ImapFactory.getOrCreate(config.imap_username, config)
 
-        return imapUser.save({
+            if (imap.getConnection().authenticated) {
+                await imap.logout()
+                data = await imap.syncFolders()
+
+            } else {
+                await imap.authenticate()
+                data = await imap.syncFolders()
+            }
+
+
+            imap_configured = true
+
+
+            if (skipSMTP && skipSMTP === "1") {
+                const transport = createTransport({
+                    host: config.smtp_host,
+                    port: config.smtp_port,
+                    secure: config.smtp_secure,
+                    auth: {
+                        user: config.smtp_username,
+                        pass: config.smtp_password,
+                    },
+
+                });
+                const response = await transport.verify()
+                if (!response) {
+                    smtp_configured = false
+                }
+            }
+
+            return {
+                imap_configured,
+                smtp_configured,
+                data
+            }
+        } catch (error: any) {
+            return {
+                imap_configured,
+                smtp_configured,
+                data
+            }
+        }
+    }
+    async insertIntoDb(config: Partial<ImapUsersEmailConnectionEntity>) {
+        const instance = imapUser.create({
             ...config,
             first_time_setup: false,
             last_synced_at: new Date().toISOString(),
         });
-        ;
+        return imapUser.save(instance)
     }
-    // @OnEvent("imap.create.user")
-    // private createImapUser(payload: string) {
-    //     const config = JSON.parse(payload)
-    //     this.insertIntoDb({
-    //         ...config,
-    //         imap_host: __CONFIG__.SMTP_SERVER_HOST,
-    //         imap_port: 993,
-    //         imap_secure: true,
-    //         smtp_host: __CONFIG__.SMTP_SERVER_HOST,
-    //         smtp_port: 587,
-    //         smtp_secure: false,
-    //         smtp_username: config.email,
-    //         smtp_password: config.password,
-    //         imap_password: config.password,
-    //         imap_username: config.email,
-    //         display_name: config.name
-    //     })
-    // }
-    // @OnEvent("imap.sync.user", { async: true })
-    // private syncUserData(payload: string) {
-    //     const config = JSON.parse(payload)
-    //     ImapFactory.firstTimeSetup(config)
-    // }
+
 }
 
 export default new ImapBaseService()

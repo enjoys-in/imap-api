@@ -7,17 +7,39 @@
 		"moduleResolution": "NodeNext",
 		"baseUrl": "./",
 		"paths": {
-			"@/*": ["./src/*"],
-			"@app/*": ["./src/app/*"],
-			"@handlers/*": ["./src/handlers/*"],
-			"@factory/*": ["./src/factory/*"],
-			"@middlewares/*": ["./src/middlewares/*"],
-			"@helpers/*": ["./src/utils/helpers/*"],
-			"@services/*": ["./src/utils/services/*"],
-			"@utils/*": ["./src/utils/*"],
-			"@libs/*": ["./src/libs/*"],
-			"@types/*": ["./src/utils/types/*"],
-			"@validators/*": ["./src/utils/validators/*"]
+			"@/*": [
+				"./src/*"
+			],
+			"@app/*": [
+				"./src/app/*"
+			],
+			"@handlers/*": [
+				"./src/handlers/*"
+			],
+			"@factory/*": [
+				"./src/factory/*"
+			],
+			"@middlewares/*": [
+				"./src/middlewares/*"
+			],
+			"@helpers/*": [
+				"./src/utils/helpers/*"
+			],
+			"@services/*": [
+				"./src/utils/services/*"
+			],
+			"@utils/*": [
+				"./src/utils/*"
+			],
+			"@libs/*": [
+				"./src/libs/*"
+			],
+			"@types/*": [
+				"./src/utils/types/*"
+			],
+			"@validators/*": [
+				"./src/utils/validators/*"
+			]
 		},
 		"resolveJsonModule": true,
 		"outDir": "./build",
@@ -26,6 +48,11 @@
 		"strict": true,
 		"skipLibCheck": true
 	},
-	"include": ["src/**/*.ts"],
-	"exclude": ["node_modules", "build"]
+	"include": [
+		"src/**/*.ts"
+	],
+	"exclude": [
+		"node_modules",
+		"build"
+	]
 }

@@ -14,7 +14,7 @@ import { getSocketIo } from "@/utils/services/sockets/Sockets";
 import BroadCastEvents from "@/utils/services/sockets/broadCastEvents";
 import { AppLifecycleManager } from "@app/modules/appLifecycle";
 import { createHandlers } from "@enjoys/exception";
-import { CreateConnection,CloseConnection } from "@factory/typeorm";
+import { CreateConnection, CloseConnection } from "@factory/typeorm";
 import bodyParser from "body-parser";
 import { blue } from "colorette";
 import cookieParser from "cookie-parser";
@@ -57,7 +57,13 @@ class AppServer {
 		Modifiers.useRoot(AppServer.App);
 		AppServer.App.use(helmet({ crossOriginResourcePolicy: false }));
 		AppServer.App.use(morgan("dev"));
-		AppServer.App.use(cors(Cors.options("https://localhost:9502")));
+		AppServer.App.use(cors({
+			origin: "http://localhost:9502",
+			optionsSuccessStatus: 200,
+			methods: ["GET", "POST", "PUT", "DELETE", "PATCH"],
+
+			credentials: true,
+		}));
 		AppServer.App.use(bodyParser.json());
 		AppServer.App.use(useHttpsRedirection);
 		AppServer.App.use(SessionHandler.forRoot());
@@ -187,16 +193,12 @@ class AppServer {
 	InitailizeApplication(): Application {
 		Logging.dev("Application Dependencies Injected");
 		try {
-			/** NOTE  Enable Database Connection
-             * Using InjectRepository Decorator first Db Connection must be initialized otherwise it will throw error that {repository} is undefined
-                *  CreateConnection()
-                .then(() => this.InitServer())
-                .catch(error => {
-                    Logging.dev(error )
-                    process.exit(1)
-                })   
-             */
-			this.InitServer();
+			CreateConnection()
+				.then(() => this.InitServer())
+				.catch(error => {
+					Logging.dev(error)
+					process.exit(1)
+				})
 			return AppServer.App;
 		} catch (error: any) {
 			Logging.dev(error.message, "error");
@@ -210,15 +212,15 @@ class AppServer {
 	 */
 	private GracefulShutdown(): void {
 		process.on('SIGINT', () => {
-            this.closeAllOpenedConnection()
-            Logging.dev("Manually Shutting Down", "notice")
-            process.exit(1);
-        })
-        process.on('SIGTERM', () => {
-            this.closeAllOpenedConnection()
-            Logging.dev("Error Occured", "error")
-            process.exit(1);
-        })
+			this.closeAllOpenedConnection()
+			Logging.dev("Manually Shutting Down", "notice")
+			process.exit(1);
+		})
+		process.on('SIGTERM', () => {
+			this.closeAllOpenedConnection()
+			Logging.dev("Error Occured", "error")
+			process.exit(1);
+		})
 		process.on("uncaughtException", (err, origin) => {
 			AppLifecycleManager.handleAppError(err);
 			Logging.dev(
@@ -236,13 +238,13 @@ class AppServer {
 		});
 	}
 	private closeAllOpenedConnection() {
-        AppLifecycleManager.destroyModules()
-        BroadCastEvents.sendServerClosed();
-        AppEvents.emit('shutdown')
+		AppLifecycleManager.destroyModules()
+		BroadCastEvents.sendServerClosed();
+		AppEvents.emit('shutdown')
 		/** NOTE  Close Database/Redis or any opened Connection */
-        // CloseConnection()
-        // Cache.closeClonnection()
-    }
+		// CloseConnection()
+		// Cache.closeClonnection()
+	}
 	/**
 	 * Closes the given server and exits the process.
 	 *

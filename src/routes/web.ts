@@ -5,7 +5,7 @@ import ApiRoutes from "./api";
 
 const router = Router();
 
-router.use(`/api/${__CONFIG__.APP.API_VERSION}`, ApiRoutes);
+router.use(`/api/${__CONFIG__.APP.API_VERSION}/imap`, ApiRoutes);
 router.use("*", (req: Request, res: Response) => {
 	throw new HttpException({
 		name: "NOT_FOUND",
