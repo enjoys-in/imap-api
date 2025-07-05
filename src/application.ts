@@ -1,8 +1,6 @@
 import * as http from "node:http";
 import { join } from "node:path";
 import cors from "cors";
-
-import { Cors } from "@/app/common/Cors";
 import { useHttpsRedirection } from "@/app/common/HttpsRedirection";
 import { Interceptor } from "@/app/common/Interceptors";
 import { RouteResolver } from "@/app/common/RouteResolver";
@@ -58,7 +56,7 @@ class AppServer {
 		AppServer.App.use(helmet({ crossOriginResourcePolicy: false }));
 		AppServer.App.use(morgan("dev"));
 		AppServer.App.use(cors({
-			origin: "http://localhost:9502",
+			origin: ["http://localhost:9502", "http://localhost:9550"],
 			optionsSuccessStatus: 200,
 			methods: ["GET", "POST", "PUT", "DELETE", "PATCH"],
 
@@ -242,8 +240,8 @@ class AppServer {
 		BroadCastEvents.sendServerClosed();
 		AppEvents.emit('shutdown')
 		/** NOTE  Close Database/Redis or any opened Connection */
-		// CloseConnection()
-		// Cache.closeClonnection()
+		CloseConnection()
+		Cache.closeClonnection()
 	}
 	/**
 	 * Closes the given server and exits the process.

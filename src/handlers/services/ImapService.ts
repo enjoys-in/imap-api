@@ -9,9 +9,9 @@ export class ImapService {
     constructor(config: ImapConfig) {
         this.client = new ImapFlow({
             host: config.imap_host,
-            port: 993,
+            port: config.imap_port,
             logger: false,
-            secure: config.imap_secure ? true : false,
+            secure: config?.imap_secure ? true : false,
             auth: {
                 user: config.imap_username,
                 pass: config.imap_password,
@@ -25,6 +25,9 @@ export class ImapService {
     }
     async logout() {
         return this.client.logout()
+    }
+    async closeConnection() {
+        return this.client.close()
     }
     async listMailboxes() {
         return this.client.list()
@@ -46,7 +49,7 @@ export class ImapService {
                         info: mailbox,
                         total_count: data.totalCount,
                         uidNext: data.uidNext,
-                        unseen_count: searchResult.length,
+                        unseen_count: searchResult?.length,
                         emails: data.emails.reverse(),
                         hasMore: data.hasMore
                     }

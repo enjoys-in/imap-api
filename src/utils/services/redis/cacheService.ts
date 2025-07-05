@@ -1,7 +1,6 @@
 import { __CONFIG__ } from "@/app/config";
 import { Logging } from "@/logs";
 import { type RedisClientType, createClient } from "redis";
-
 class CacheService {
 	public cache: RedisClientType;
 	private static instance: CacheService

@@ -12,6 +12,7 @@ import { MiscellaneousHelper } from "@/utils/helpers/misc";
 import { REDIS_KEY_NAME } from "@/utils/interfaces/redisName.interface";
 import { ImapRequestBody } from "@/utils/interfaces/imap.interface";
 import { AppRoles } from "@/utils/interfaces/user.interface";
+import { PublicRoute } from "@/utils/decorators";
 
 
 // import { AuthService } from "@/handlers/services/AuthService";
@@ -31,7 +32,7 @@ class ImapController {
      * @param res - Response object
      * @returns Response object
      */
-    // @PublicRoute()
+    @PublicRoute()
     async loginUser(req: Request<{}, {}, Pick<ImapRequestBody, "imap_username" | "imap_password">>, res: Response) {
         try {
             // check user domain is hosted on our server if yes then dont use imap use direct api calls
@@ -43,7 +44,7 @@ class ImapController {
             const isUser = await imapBaseService.getUserEmail(req.body.imap_username);
             if (!isUser) {
                 res.status(200)
-                    .json({ message: "Not Authencticated", result: req.body, success: false })
+                    .json({ message: "Not Authencticated", result: null, success: false })
                     .end();
                 return;
             }
@@ -54,15 +55,22 @@ class ImapController {
 
 
             const signJWT = utils.signJWT({
+                display_name: isUser.display_name,
                 mid: isUser.id,
                 email: req.body.imap_username,
                 domain_name: MiscellaneousHelper.getOnlyDomainFromEmail(req.body.imap_username),
                 role: AppRoles.USER
-            }, `${isUser.id}`)
+            }, `${isUser.id}`, '60d')
 
-            res.cookie("access_token", signJWT, { httpOnly: true, secure: __CONFIG__.APP.APP_ENV === "PROD", sameSite: __CONFIG__.APP.APP_ENV === "PROD" ? "none" : "lax", maxAge: 3600 * 24 * 180 })
+            res.cookie("access_token", signJWT,
+                {
+                    httpOnly: true,
+                    secure: __CONFIG__.APP.APP_ENV === "PROD",
+                    sameSite: __CONFIG__.APP.APP_ENV === "PROD" ? "none" : "strict",
+                    maxAge: 3600 * 60 * 180,
+                    expires: new Date(Date.now() + 3600 * 24 * 60 * 1000)
 
-
+                })
             res
                 .json({ message: "Authencticated", result: userMailboxes, success: true })
                 .end();
@@ -82,7 +90,7 @@ class ImapController {
         }
 
     }
-    // @PublicRoute()
+    @PublicRoute()
     async validateNewUser(req: Request<{}, {}, ImapRequestBody>, res: Response) {
         try {
             const skipSMTP = req.query?.skipSMTP
@@ -108,9 +116,7 @@ class ImapController {
             config.imap_password = securityService.EncryptDecryptData(config.imap_password, __CONFIG__.SECRETS.APP_SECRET).DecryptFromString();
             config.smtp_password = securityService.EncryptDecryptData(config.smtp_password, __CONFIG__.SECRETS.APP_SECRET).DecryptFromString();
 
-            const { imap_configured,
-                smtp_configured,
-                data, } = await imapBaseService.setupUser(config, skipSMTP as string | undefined);
+            const { imap_configured, smtp_configured, data, } = await imapBaseService.setupUser(config, skipSMTP as string | undefined);
 
             const createdUser = await imapBaseService.insertIntoDb({
                 ...config,
@@ -122,8 +128,15 @@ class ImapController {
                 email: req.body.imap_username,
                 domain_name: MiscellaneousHelper.getOnlyDomainFromEmail(req.body.imap_username),
                 role: AppRoles.USER
-            }, `${createdUser.id}`)
-            res.cookie("access_token", signJWT, { httpOnly: true, secure: __CONFIG__.APP.APP_ENV === "PROD", sameSite: __CONFIG__.APP.APP_ENV === "PROD" ? "none" : "lax", maxAge: 3600 * 24 * 180 })
+            }, `${createdUser.id}`, "60d")
+            res.cookie("access_token", signJWT,
+                {
+                    httpOnly: true,
+                    secure: __CONFIG__.APP.APP_ENV === "PROD",
+                    sameSite: __CONFIG__.APP.APP_ENV === "PROD" ? "none" : "strict",
+                    maxAge: 3600 * 24 * 60,
+                    expires: new Date(Date.now() + 3600 * 24 * 60 * 1000)
+                })
             res
                 .json({ message: "Authencticated", result: data, success: true })
                 .end();
@@ -153,10 +166,15 @@ class ImapController {
      */
     async reLogin(req: Request, res: Response) {
         try {
+
+            if (!req.user?.email) {
+                throw new Error("Login required");
+            }
             const isUser = await imapBaseService.getUserEmail(req.user?.email as string);
 
             const config = imapBaseService.configDTO(isUser)
             const imap = ImapFactory.getOrCreate(req.user?.email as string, config)
+
             if (imap.getConnection().authenticated) {
                 res.json({ message: "OK", result: null, success: true }).end();
                 return
@@ -164,6 +182,51 @@ class ImapController {
             await imap.authenticate()
 
             res.json({ message: "OK", result: null, success: true }).end();
+            return;
+        } catch (error) {
+            if (error instanceof Error) {
+                res
+                    .json({ message: error.message, result: null, success: false })
+                    .end();
+
+                return;
+            }
+            res
+                .json({ message: "Something went wrong", result: null, success: false })
+                .end();
+            return;
+        }
+    }
+
+    @PublicRoute()
+    async userLogout(req: Request, res: Response) {
+        try {
+
+            res.clearCookie("access_token");
+            res.json({ message: "OK", result: null, success: true }).end();
+            return;
+        } catch (error) {
+            if (error instanceof Error) {
+                res
+                    .json({ message: error.message, result: null, success: false })
+                    .end();
+
+                return;
+            }
+            res
+                .json({ message: "Something went wrong", result: null, success: false })
+                .end();
+            return;
+        }
+    }
+    async userProfile(req: Request, res: Response) {
+        try {
+
+            if (!req.user?.email) {
+                throw new Error("Login required");
+            }
+
+            res.json({ message: "OK", result: req.user, success: true }).end();
             return;
         } catch (error) {
             if (error instanceof Error) {
@@ -306,8 +369,8 @@ class ImapController {
                 throw new Error("Login required");
             }
             const emailBody = await imapService.fetchMessageBody(decodeURIComponent(selectedMailbox), uid);
-         
-            res.json({ message: "OK", result:emailBody, success: true }).end();
+
+            res.json({ message: "OK", result: emailBody, success: true }).end();
             return;
         } catch (error) {
             if (error instanceof Error) {

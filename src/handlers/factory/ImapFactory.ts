@@ -1,5 +1,3 @@
-
- 
 import { ImapConfig } from '@/utils/interfaces/imap.interface';
 import { ImapService } from '../services/ImapService';
 
@@ -10,10 +8,9 @@ export class ImapFactory {
 
     static getOrCreate(useremail: string, config: ImapConfig): ImapService {
         if (!this.instances.has(useremail)) {
-            const service = new ImapService(config);
+            const service = new ImapService(config);          
             this.instances.set(useremail, service);
         }
-
         return this.instances.get(useremail)!;
     }
     static async firstTimeSetup(config: ImapConfig) {

@@ -10,7 +10,7 @@ const __config = {
 		APP_URL:
 			APP_ENV === "DEV" || APP_ENV === "undefined"
 				? `http://localhost:${APP_PORT}`
-				: `https://${APP_DOMAIN}`,
+				: `https://imap-api.${APP_DOMAIN}`,
 		API_KEY: String(process.env.API_KEY),
 		ALLOWED_PRIMARY_DOMAINS: String(process.env.ALLOWED_PRIMARY_DOMAINS),
 		MAIL_TEMPLATE_PATH: String(process.env.MAIL_TEMPLATE_PATH),
@@ -39,8 +39,7 @@ const __config = {
 		SMTP_HOST_PASS: String(process.env.SMTP_HOST_PASS),
 		SMTP_SENDER_NAME: String(process.env.SMTP_SENDER_NAME),
 	},
-	CACHE: {
-		CACHE_ENBALED: String(process.env.CACHE_ENBALED),
+	CACHE: {	 
 		CACHE_HOST: String(process.env.CACHE_HOST),
 		CACHE_PORT: Number(process.env.PORT) || 6379,
 	},

@@ -7,10 +7,12 @@ import { validateMailboxOperation } from "@/utils/validators/Request.validator";
 
 const router = Router();
 
-router.post("/authenticate", ImapController.loginUser);
+router.post("/authenticate",ImapController.loginUser);
 router.post("/validate", ImapController.validateNewUser);
 router.get("/first-load", ImapController.onFirstLoad);
 router.get("/relogin", ImapController.reLogin);
+router.get("/user-profile", ImapController.userProfile);
+router.post("/logout", ImapController.userLogout);
 router.post("/test", ImapController.test);
 
 router.get("/fetch-mailboxes", ImapController.loadMailboxes);

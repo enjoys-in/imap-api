@@ -1,4 +1,3 @@
-
 import { createTransport } from "nodemailer";
 import { ImapService } from "./ImapService";
 
@@ -9,12 +8,9 @@ import { ImapUsersEmailConnectionEntity } from "@/factory/entities/imap.entity";
 import { ImapRequestBody } from "@/utils/interfaces/imap.interface";
 import { ListResponse } from "imapflow";
 
-
-
 const imapUser = InjectRepository(ImapUsersEmailConnectionEntity);
 
 class ImapBaseService {
-
     async getUserEmail(useremail: string) {
         return imapUser.findOne({
             where: {
@@ -35,41 +31,41 @@ class ImapBaseService {
             smtp_secure: config.smtp_secure,
             smtp_username: config.smtp_username,
             smtp_password: config.smtp_password,
-        }
+        };
     }
     async loginUser(config: ImapRequestBody) {
         try {
+            const imap = ImapFactory.getOrCreate(config.imap_username, config);
 
-            const imap = ImapFactory.getOrCreate(config.imap_username, config)
+            !(await imap.getConnection().authenticated) &&
+                (await imap.authenticate());
+            const data = await imap.syncFolders();
 
-            !(imap.getConnection().authenticated) && (await imap.authenticate())
-            const data = await imap.syncFolders()
-
-            return data
+            return data;
         } catch (error: any) {
-            throw new Error(error)
+            throw new Error(error);
         }
     }
-    async setupUser(config: Omit<ImapRequestBody, "uses_separate_credentials">, skipSMTP: string | undefined = undefined) {
-        let imap_configured: boolean = false
-        let smtp_configured: boolean = false
-        let data: any[] | null = null
+    async setupUser(
+        config: Omit<ImapRequestBody, "uses_separate_credentials">,
+        skipSMTP: string | undefined = undefined
+    ) {
+        let imap_configured: boolean = false;
+        let smtp_configured: boolean = false;
+        let data: any[] | null = null;
         try {
-
-            const imap = ImapFactory.getOrCreate(config.imap_username, config)
+            const imap = ImapFactory.getOrCreate(config.imap_username, config);
 
             if (imap.getConnection().authenticated) {
-                await imap.logout()
-                data = await imap.syncFolders()
-
+                data = await imap.syncFolders();
+                await imap.logout();
+                imap.getConnection().close();
             } else {
-                await imap.authenticate()
-                data = await imap.syncFolders()
+                await imap.authenticate();
+                data = await imap.syncFolders();
             }
 
-
-            imap_configured = true
-
+            imap_configured = true;
 
             if (skipSMTP && skipSMTP === "1") {
                 const transport = createTransport({
@@ -80,25 +76,24 @@ class ImapBaseService {
                         user: config.smtp_username,
                         pass: config.smtp_password,
                     },
-
                 });
-                const response = await transport.verify()
+                const response = await transport.verify();
                 if (!response) {
-                    smtp_configured = false
+                    smtp_configured = false;
                 }
             }
 
             return {
                 imap_configured,
                 smtp_configured,
-                data
-            }
+                data,
+            };
         } catch (error: any) {
             return {
                 imap_configured,
                 smtp_configured,
-                data
-            }
+                data,
+            };
         }
     }
     async insertIntoDb(config: Partial<ImapUsersEmailConnectionEntity>) {
@@ -107,9 +102,8 @@ class ImapBaseService {
             first_time_setup: false,
             last_synced_at: new Date().toISOString(),
         });
-        return imapUser.save(instance)
+        return imapUser.save(instance);
     }
-
 }
 
-export default new ImapBaseService()
+export default new ImapBaseService();

@@ -1,6 +1,5 @@
 import { DataSource } from "typeorm";
 import { __CONFIG__ } from ".";
-import { ImapUsersEmailConnectionEntity } from "@/factory/entities/imap.entity";
 
 const DBURL = {
 	url: `postgres://${__CONFIG__.DATABASE.DB_USER}:${__CONFIG__.DATABASE.DB_PASS}@${__CONFIG__.DATABASE.DB_HOST}:${+__CONFIG__.DATABASE.DB_PORT}/${__CONFIG__.DATABASE.DB_NAME}`,
@@ -19,8 +18,7 @@ export const AppDataSource = new DataSource({
 	type: "postgres",
 	synchronize: __CONFIG__.APP.APP_ENV === "DEV",
 	logging: false,
-	entities: [ImapUsersEmailConnectionEntity],
-	// entities: ["build/factory/entities/**/*.entity.js"],
+	entities: ["build/factory/entities/**/*.entity.js"],
 	subscribers: [],
 	migrationsRun: __CONFIG__.APP.APP_ENV === "DEV",
 	migrations: ["build/factory/migrations/**/*.js"],

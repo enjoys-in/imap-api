@@ -1,7 +1,7 @@
 import { RouteResolver } from "@/app/common/RouteResolver";
 import { __CONFIG__ } from "@/app/config";
 import { PUBLIC_ROUTE_KEY } from "@/utils/helpers/constants";
-import type { IUser } from "@/utils/interfaces/user.interface";
+import { AppRoles, type IUser } from "@/utils/interfaces/user.interface";
 import type { NextFunction, Request, Response } from "express";
 import jwt from "jsonwebtoken";
 import { match } from "path-to-regexp";
@@ -35,6 +35,7 @@ export class JwtAuth {
 			if (isPublicRoute) {
 				return next();
 			}
+			
 			const authHeader =
 				req.cookies?.access_token ||
 				(req.headers.authorization as string) ||
@@ -72,7 +73,7 @@ export class JwtAuth {
 					.end();
 				return;
 			}
-			if (decodedToken.role !== "User") {
+			if (decodedToken.role !== AppRoles.USER) {
 				res
 					.json({ message: "Access Denied", result: null, success: false })
 					.end();
