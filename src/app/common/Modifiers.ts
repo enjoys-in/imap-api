@@ -34,7 +34,9 @@ export class Modifiers {
 		this.app.set("title", this.title);
 		this.app.use(this.customHeaders);
 		this.app.get("/health", (req, res) => {
-			res.status(200).json({ status: "Ok Report Hai Ji", message: "Server is running" });
+			res
+				.status(200)
+				.json({ status: "Ok Report Hai Ji", message: "Server is running" });
 		});
 		this.modifiedCustomFunction();
 	}

@@ -3,17 +3,19 @@ import { Logging } from "@/logs";
 import { type RedisClientType, createClient } from "redis";
 class CacheService {
 	public cache: RedisClientType;
-	private static instance: CacheService
-	private publisher: RedisClientType
-	private subscriber: RedisClientType
-	private static subscriberInitialized: boolean = false;
+	private static instance: CacheService;
+	private publisher: RedisClientType;
+	private subscriber: RedisClientType;
+	private static subscriberInitialized = false;
 	constructor() {
 		Logging.dev("Redis Cache Enabled");
-		this.cache = createClient({ url: __CONFIG__.CACHE.CACHE_HOST + ":" + __CONFIG__.CACHE.CACHE_PORT });
-		this.publisher = this.cache.duplicate()
-		this.subscriber = this.cache.duplicate()
-		this.ConnectRedisClient()
-		this.connectPubSub()
+		this.cache = createClient({
+			url: `${__CONFIG__.CACHE.CACHE_HOST}:${__CONFIG__.CACHE.CACHE_PORT}`,
+		});
+		this.publisher = this.cache.duplicate();
+		this.subscriber = this.cache.duplicate();
+		this.ConnectRedisClient();
+		this.connectPubSub();
 	}
 	/**
 	 * Connect to the Redis client.
@@ -28,8 +30,14 @@ class CacheService {
 			.catch((error: any) => Logging.error(`Error : ${error}`));
 	}
 	private connectPubSub() {
-		this.publisher.connect().then(() => Logging.dev(`Redis Publisher Connected Successfully`)).catch((error: any) => Logging.error(`Error : ${error}`));
-		this.subscriber.connect().then(() => Logging.dev(`Redis Subscriber Connected Successfully`)).catch((error: any) => Logging.error(`Error : ${error}`));
+		this.publisher
+			.connect()
+			.then(() => Logging.dev("Redis Publisher Connected Successfully"))
+			.catch((error: any) => Logging.error(`Error : ${error}`));
+		this.subscriber
+			.connect()
+			.then(() => Logging.dev("Redis Subscriber Connected Successfully"))
+			.catch((error: any) => Logging.error(`Error : ${error}`));
 	}
 	/**
 	 * Deletes the cache.
@@ -79,16 +87,16 @@ class CacheService {
 	clearHash(hashKey: string) {
 		this.cache.del(JSON.stringify(hashKey));
 	}
-	public closeClonnection(): void {
-		this.publisher.quit()
-		this.subscriber.quit()
-		this.cache.quit()
+	public closeConnection(): void {
+		this.publisher.quit();
+		this.subscriber.quit();
+		this.cache.quit();
 	}
 	getPubSub() {
 		return {
 			publisher: this.publisher,
-			subscriber: this.subscriber
-		}
+			subscriber: this.subscriber,
+		};
 	}
 	publishToChannel(channel: string, data: any) {
 		if (typeof data === "object") {
@@ -96,7 +104,10 @@ class CacheService {
 		}
 		this.publisher.publish(channel, data);
 	}
-	subscribeToChannel(channel: string, callback: (message: string, channel: string,) => void) {
+	subscribeToChannel(
+		channel: string,
+		callback: (message: string, channel: string) => void,
+	) {
 		if (CacheService.subscriberInitialized) {
 			return;
 		}
@@ -110,4 +121,4 @@ class CacheService {
 		return CacheService.instance;
 	}
 }
-export const Cache = CacheService.getInstance()
+export const Cache = CacheService.getInstance();

@@ -1,13 +1,12 @@
 import { Router } from "express";
 
-
-import { Validator } from "@/middlewares/validator.middleware";
 import ImapController from "@/handlers/controllers/imap.controller";
+import { Validator } from "@/middlewares/validator.middleware";
 import { validateMailboxOperation } from "@/utils/validators/Request.validator";
 
 const router = Router();
 
-router.post("/authenticate",ImapController.loginUser);
+router.post("/authenticate", ImapController.loginUser);
 router.post("/validate", ImapController.validateNewUser);
 router.get("/first-load", ImapController.onFirstLoad);
 router.get("/relogin", ImapController.reLogin);
@@ -26,15 +25,33 @@ router.delete("/delete-email", ImapController.moveToTrash);
 router.patch("/handle-flags", ImapController.handleFlagsOnMessages);
 // router.delete('/delete-mailbox', ImapController.deleteMailbox)
 // router.post('/create-mailbox', ImapController.createMailbox)
-router.patch('/move-email', ImapController.moveToFolder)
-router.patch('/copy-email', ImapController.copyToAnotherFolder)
-
+router.patch("/move-email", ImapController.moveToFolder);
+router.patch("/copy-email", ImapController.copyToAnotherFolder);
 
 router.patch(
-    "/handle-mailbox-events",
-    Validator.forFeature(validateMailboxOperation),
-    ImapController.handleMailboxOperations
+	"/handle-mailbox-events",
+	Validator.forFeature(validateMailboxOperation),
+	ImapController.handleMailboxOperations,
 );
 router.get("/sync-all", ImapController.syncCompleteMailbox);
+
+// ── New IMAP function endpoints ──
+router.post("/search-emails", ImapController.searchEmails);
+router.get("/fetch-headers", ImapController.fetchHeaders);
+router.get("/download-attachment", ImapController.downloadAttachment);
+router.get("/mailbox-tree", ImapController.mailboxTree);
+router.post("/append-message", ImapController.appendMessage);
+router.patch("/custom-flags", ImapController.handleCustomFlags);
+router.get("/connection-status", ImapController.connectionStatus);
+
+// ── Background Job endpoints ──
+router.post("/dispatch-job", ImapController.dispatchJob);
+router.get("/job-status", ImapController.getJobStatus);
+router.get("/job-list", ImapController.listJobs);
+
+// ── Capability Endpoints ──
+router.get("/server-capabilities", ImapController.getServerCapabilities);
+router.post("/check-capability", ImapController.checkCapability);
+router.post("/refresh-capabilities", ImapController.refreshCapabilities);
 
 export default router;

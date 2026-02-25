@@ -1,6 +1,5 @@
 import * as http from "node:http";
 import { join } from "node:path";
-import cors from "cors";
 import { useHttpsRedirection } from "@/app/common/HttpsRedirection";
 import { Interceptor } from "@/app/common/Interceptors";
 import { RouteResolver } from "@/app/common/RouteResolver";
@@ -12,10 +11,11 @@ import { getSocketIo } from "@/utils/services/sockets/Sockets";
 import BroadCastEvents from "@/utils/services/sockets/broadCastEvents";
 import { AppLifecycleManager } from "@app/modules/appLifecycle";
 import { createHandlers } from "@enjoys/exception";
-import { CreateConnection, CloseConnection } from "@factory/typeorm";
+import { CloseConnection, CreateConnection } from "@factory/typeorm";
 import bodyParser from "body-parser";
 import { blue } from "colorette";
 import cookieParser from "cookie-parser";
+import cors from "cors";
 import express, { type Application } from "express";
 import fileUpload from "express-fileupload";
 import helmet from "helmet";
@@ -55,13 +55,15 @@ class AppServer {
 		Modifiers.useRoot(AppServer.App);
 		AppServer.App.use(helmet({ crossOriginResourcePolicy: false }));
 		AppServer.App.use(morgan("dev"));
-		AppServer.App.use(cors({
-			origin: ["http://localhost:9502", "http://localhost:9550"],
-			optionsSuccessStatus: 200,
-			methods: ["GET", "POST", "PUT", "DELETE", "PATCH"],
+		AppServer.App.use(
+			cors({
+				origin: ["http://localhost:9502", "http://localhost:9550"],
+				optionsSuccessStatus: 200,
+				methods: ["GET", "POST", "PUT", "DELETE", "PATCH"],
 
-			credentials: true,
-		}));
+				credentials: true,
+			}),
+		);
 		AppServer.App.use(bodyParser.json());
 		AppServer.App.use(useHttpsRedirection);
 		AppServer.App.use(SessionHandler.forRoot());
@@ -188,15 +190,15 @@ class AppServer {
 	/**
 	 * Initializes the application.
 	 */
-	InitailizeApplication(): Application {
+	InitializeApplication(): Application {
 		Logging.dev("Application Dependencies Injected");
 		try {
 			CreateConnection()
 				.then(() => this.InitServer())
-				.catch(error => {
-					Logging.dev(error)
-					process.exit(1)
-				})
+				.catch((error) => {
+					Logging.dev(error);
+					process.exit(1);
+				});
 			return AppServer.App;
 		} catch (error: any) {
 			Logging.dev(error.message, "error");
@@ -209,16 +211,16 @@ class AppServer {
 	 * @private
 	 */
 	private GracefulShutdown(): void {
-		process.on('SIGINT', () => {
-			this.closeAllOpenedConnection()
-			Logging.dev("Manually Shutting Down", "notice")
+		process.on("SIGINT", () => {
+			this.closeAllOpenedConnection();
+			Logging.dev("Manually Shutting Down", "notice");
 			process.exit(1);
-		})
-		process.on('SIGTERM', () => {
-			this.closeAllOpenedConnection()
-			Logging.dev("Error Occured", "error")
-			process.exit(1);
-		})
+		});
+		process.on("SIGTERM", () => {
+			this.closeAllOpenedConnection();
+			Logging.dev("Received SIGTERM, shutting down gracefully", "notice");
+			process.exit(0);
+		});
 		process.on("uncaughtException", (err, origin) => {
 			AppLifecycleManager.handleAppError(err);
 			Logging.dev(
@@ -236,12 +238,12 @@ class AppServer {
 		});
 	}
 	private closeAllOpenedConnection() {
-		AppLifecycleManager.destroyModules()
+		AppLifecycleManager.destroyModules();
 		BroadCastEvents.sendServerClosed();
-		AppEvents.emit('shutdown')
+		AppEvents.emit("shutdown");
 		/** NOTE  Close Database/Redis or any opened Connection */
-		CloseConnection()
-		Cache.closeClonnection()
+		CloseConnection();
+		Cache.closeConnection();
 	}
 	/**
 	 * Closes the given server and exits the process.

@@ -1,3 +1,4 @@
+import * as crypto from "node:crypto";
 import { __CONFIG__ } from "@/app/config";
 import { Logging } from "@/logs";
 import Helpers, { SetAppRoutes } from "@/utils/helpers";
@@ -34,11 +35,11 @@ export class AppMiddlewares {
 		return (req: Request, res: Response, next: NextFunction) => {
 			const headers = req.headers;
 			const apiKey = headers.api_key || undefined;
-			if (typeof apiKey === "undefined") {
-				res.status(404).json({
+		if (typeof apiKey === "undefined") {
+				res.status(401).json({
 					success: false,
 					result: {
-						code: 404,
+						code: 401,
 					},
 					message: "API_KEY is Required",
 				});
@@ -124,10 +125,12 @@ export class AppMiddlewares {
 				JSON.stringify(req.body),
 			);
 
+			const sigBuf = Buffer.from(sig, "hex");
+			const digestBuf = Buffer.from(digest, "hex");
+
 			if (
-				sig.length !== digest.length ||
-				String(sig) !== String(digest) ||
-				!digest.match(sig)
+				sigBuf.length !== digestBuf.length ||
+				!crypto.timingSafeEqual(sigBuf, digestBuf)
 			) {
 				res
 					.status(400)

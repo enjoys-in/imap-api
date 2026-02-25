@@ -1,9 +1,6 @@
 import { DataSource } from "typeorm";
 import { __CONFIG__ } from ".";
 
-const DBURL = {
-	url: `postgres://${__CONFIG__.DATABASE.DB_USER}:${__CONFIG__.DATABASE.DB_PASS}@${__CONFIG__.DATABASE.DB_HOST}:${+__CONFIG__.DATABASE.DB_PORT}/${__CONFIG__.DATABASE.DB_NAME}`,
-};
 const DB_OPTIONS = {
 	host: __CONFIG__.DATABASE.DB_HOST || "localhost",
 	port: +__CONFIG__.DATABASE.DB_PORT,
@@ -12,7 +9,7 @@ const DB_OPTIONS = {
 	database: __CONFIG__.DATABASE.DB_NAME,
 };
 const DB =
-	__CONFIG__.DATABASE.DATABASE_URL === "undefined" ? DBURL : DB_OPTIONS;
+	__CONFIG__.DATABASE.DATABASE_URL ? { url: __CONFIG__.DATABASE.DATABASE_URL } : DB_OPTIONS;
 export const AppDataSource = new DataSource({
 	...DB,
 	type: "postgres",

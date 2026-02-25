@@ -35,7 +35,7 @@ export class JwtAuth {
 			if (isPublicRoute) {
 				return next();
 			}
-			
+
 			const authHeader =
 				req.cookies?.access_token ||
 				(req.headers.authorization as string) ||
@@ -43,8 +43,9 @@ export class JwtAuth {
 
 			if (!authHeader) {
 				res
+					.status(401)
 					.json({
-						message: "Athorization header is missing",
+						message: "Authorization header is missing",
 						result: null,
 						success: false,
 					})
@@ -55,6 +56,7 @@ export class JwtAuth {
 			const token = authHeader?.replace("JWT ", "");
 			if (!token) {
 				res
+					.status(401)
 					.json({
 						message: "Authorization Token is missing",
 						result: null,
@@ -67,14 +69,9 @@ export class JwtAuth {
 				token,
 				__CONFIG__.SECRETS.JWT_SECRET_TOKEN,
 			) as IUser;
-			if (!decodedToken) {
-				res
-					.json({ message: "Invalid Token", result: null, success: false })
-					.end();
-				return;
-			}
 			if (decodedToken.role !== AppRoles.USER) {
 				res
+					.status(403)
 					.json({ message: "Access Denied", result: null, success: false })
 					.end();
 				return;
@@ -86,6 +83,7 @@ export class JwtAuth {
 			next();
 		} catch (error: any) {
 			res
+				.status(401)
 				.json({
 					message: "Invalid Token",
 					result: error.message,
@@ -112,6 +110,7 @@ export class JwtAuth {
 
 			if (!authHeader) {
 				res
+					.status(401)
 					.json({
 						message: "Authorization header is missing",
 						result: null,
@@ -120,9 +119,10 @@ export class JwtAuth {
 					.end();
 				return;
 			}
-			const token = authHeader?.replace("JWT ", "");
+			const token = authHeader?.replace("JWT ", "").replace("Bearer ", "");
 			if (!token) {
 				res
+					.status(401)
 					.json({
 						message: "Authorization Token is missing",
 						result: null,
@@ -135,10 +135,6 @@ export class JwtAuth {
 				token,
 				__CONFIG__.SECRETS.JWT_SECRET_TOKEN,
 			);
-			if (!decodedToken) {
-				res.json({ message: "Invalid Token", result: null, success: false });
-				return;
-			}
 			res
 				.json({
 					message: "Validated Token",
@@ -149,6 +145,7 @@ export class JwtAuth {
 			return;
 		} catch (error: any) {
 			res
+				.status(401)
 				.json({
 					message: "Invalid Token",
 					result: error.message,

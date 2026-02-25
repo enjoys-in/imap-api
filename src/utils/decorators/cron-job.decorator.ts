@@ -25,13 +25,16 @@ export const CronJob = (
 		);
 
 		if (!target.constructor.__cronInitialized) {
-            try {
-                InitializeCronJobs(target.constructor);
-                target.constructor.__cronInitialized = true;
-            } catch (error:any) {
-                Logging.dev(`Failed to initialize cron jobs: ${error.message}`, "error");
-            }
-        }
+			try {
+				InitializeCronJobs(target.constructor);
+				target.constructor.__cronInitialized = true;
+			} catch (error: any) {
+				Logging.dev(
+					`Failed to initialize cron jobs: ${error.message}`,
+					"error",
+				);
+			}
+		}
 
 		descriptor.value = (...args: any[]) => original(...args);
 	};

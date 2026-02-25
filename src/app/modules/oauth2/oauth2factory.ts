@@ -3,7 +3,7 @@ import type {
 	IAuthProvider,
 } from "@/utils/interfaces/provider.interface";
 import { GithubAuthProvider } from "./provider/GithubAuthProvider";
-import { GoogleAuthProvider } from "./provider/GoogleAuthProvider ";
+import { GoogleAuthProvider } from "./provider/GoogleAuthProvider";
 
 export class AuthProviderFactory {
 	private static _authProviders: Record<string, IAuthProvider> = {};

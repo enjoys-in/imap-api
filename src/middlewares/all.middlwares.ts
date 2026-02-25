@@ -19,7 +19,7 @@ class AllMiddlewares {
 				"%s %s %f in %fms",
 				req.method,
 				req.path,
-				req.statusCode,
+				res.statusCode,
 				elapsedTimeInMs.toFixed(4),
 			);
 		});
