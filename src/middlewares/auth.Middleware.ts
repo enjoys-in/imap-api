@@ -39,6 +39,8 @@ export class JwtAuth {
 			const authHeader =
 				req.cookies?.access_token ||
 				(req.headers.authorization as string) ||
+				(req.query?.token as string) ||
+				(req.query?.access_token as string) ||
 				null;
 
 			if (!authHeader) {
@@ -106,6 +108,8 @@ export class JwtAuth {
 			const authHeader =
 				req.cookies?.access_token ||
 				(req.headers.authorization as string) ||
+				(req.query?.token as string) ||
+				(req.query?.access_token as string) ||
 				null;
 
 			if (!authHeader) {
