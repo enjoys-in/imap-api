@@ -27,7 +27,7 @@ export enum ImapCapability {
 	// RFC 3516 – server-side binary content
 	BINARY = "BINARY",
 	// RFC 4978 – compress
-	COMPRESS_DEFLATE = "COMPRESS=DEFLATE", 
+	COMPRESS_DEFLATE = "COMPRESS=DEFLATE",
 	// RFC 2971 – server ID
 	ID = "ID",
 	// RFC 5258 – LIST-EXTENDED
@@ -354,7 +354,10 @@ export class CapabilityManager {
 			searchRes: has(ImapCapability.SEARCHRES),
 			startTls: has(ImapCapability.STARTTLS),
 			saslIr: has(ImapCapability.SASL_IR),
-			appendLimit: appendLimitVal !== undefined ? appendLimitVal : has(ImapCapability.APPENDLIMIT),
+			appendLimit:
+				appendLimitVal !== undefined
+					? appendLimitVal
+					: has(ImapCapability.APPENDLIMIT),
 			children: has(ImapCapability.CHILDREN),
 			specialUse: has(ImapCapability.SPECIAL_USE),
 			uidPlus: has(ImapCapability.UIDPLUS),

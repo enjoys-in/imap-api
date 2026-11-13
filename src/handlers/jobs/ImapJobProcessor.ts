@@ -3,11 +3,7 @@ import { Logging } from "@/logs";
 import { AppEvents } from "@/utils/services/Events";
 import { getSocketIo } from "@/utils/services/sockets/Sockets";
 import { ImapFactory } from "../factory/ImapFactory";
-import {
-	type ImapJob,
-	type ImapJobPayloads,
-	ImapJobType,
-} from "./types";
+import { type ImapJob, type ImapJobPayloads, ImapJobType } from "./types";
 
 /** Socket.IO event name for job status updates */
 const JOB_STATUS_EVENT = "imap:job:status";
@@ -46,6 +42,11 @@ export class ImapJobProcessor {
 			status: "queued",
 			createdAt: new Date(),
 		};
+
+		// Bound queue map to prevent unbounded memory growth
+		if (ImapJobProcessor.jobs.size > 100) {
+			ImapJobProcessor.cleanup(30 * 60 * 1000);
+		}
 
 		ImapJobProcessor.jobs.set(job.id, job as ImapJob);
 		ImapJobProcessor.queue.push(job.id);
@@ -143,19 +144,22 @@ export class ImapJobProcessor {
 
 		switch (type) {
 			case ImapJobType.DELETE_MESSAGES: {
-				const p = payload as ImapJobPayloads[typeof ImapJobType.DELETE_MESSAGES];
+				const p =
+					payload as ImapJobPayloads[typeof ImapJobType.DELETE_MESSAGES];
 				const service = ImapJobProcessor.getService(p.userEmail);
 				return service.deleteMessages(p.uids, p.mailbox);
 			}
 
 			case ImapJobType.DELETE_ALL_MESSAGES: {
-				const p = payload as ImapJobPayloads[typeof ImapJobType.DELETE_ALL_MESSAGES];
+				const p =
+					payload as ImapJobPayloads[typeof ImapJobType.DELETE_ALL_MESSAGES];
 				const service = ImapJobProcessor.getService(p.userEmail);
 				return service.deleteAllMessages(p.mailbox);
 			}
 
 			case ImapJobType.MOVE_ALL_MESSAGES: {
-				const p = payload as ImapJobPayloads[typeof ImapJobType.MOVE_ALL_MESSAGES];
+				const p =
+					payload as ImapJobPayloads[typeof ImapJobType.MOVE_ALL_MESSAGES];
 				const service = ImapJobProcessor.getService(p.userEmail);
 				return service.moveAllMessages(p.fromMailbox, p.toMailbox);
 			}
@@ -167,7 +171,8 @@ export class ImapJobProcessor {
 			}
 
 			case ImapJobType.MARK_ALL_UNREAD: {
-				const p = payload as ImapJobPayloads[typeof ImapJobType.MARK_ALL_UNREAD];
+				const p =
+					payload as ImapJobPayloads[typeof ImapJobType.MARK_ALL_UNREAD];
 				const service = ImapJobProcessor.getService(p.userEmail);
 				return service.markAllAsUnread(p.mailbox);
 			}
@@ -179,7 +184,8 @@ export class ImapJobProcessor {
 			}
 
 			case ImapJobType.EXPUNGE_MAILBOX: {
-				const p = payload as ImapJobPayloads[typeof ImapJobType.EXPUNGE_MAILBOX];
+				const p =
+					payload as ImapJobPayloads[typeof ImapJobType.EXPUNGE_MAILBOX];
 				const service = ImapJobProcessor.getService(p.userEmail);
 				// Delete messages already marked \Deleted
 				const uids = await service.searchMessages(p.mailbox, { deleted: true });
@@ -190,7 +196,8 @@ export class ImapJobProcessor {
 			}
 
 			case ImapJobType.BULK_FLAG_UPDATE: {
-				const p = payload as ImapJobPayloads[typeof ImapJobType.BULK_FLAG_UPDATE];
+				const p =
+					payload as ImapJobPayloads[typeof ImapJobType.BULK_FLAG_UPDATE];
 				const service = ImapJobProcessor.getService(p.userEmail);
 				if (p.addFlags?.length) {
 					await service.setCustomFlags(p.uids, p.addFlags);

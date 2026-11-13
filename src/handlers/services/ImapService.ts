@@ -1,8 +1,8 @@
 import type { ImapConfig } from "@/utils/interfaces/imap.interface";
 import {
-	ImapFlow,
 	type FetchMessageObject,
 	type FetchQueryObject,
+	ImapFlow,
 	type ListResponse,
 	type ListTreeResponse,
 	type MessageEnvelopeObject,
@@ -267,10 +267,14 @@ export class ImapService {
 		headerKeys?: string[],
 	) {
 		await this.client.mailboxOpen(mailbox);
-		const msg = await this.client.fetchOne(uid, {
-			uid: true,
-			headers: headerKeys ?? true,
-		}, { uid: true });
+		const msg = await this.client.fetchOne(
+			uid,
+			{
+				uid: true,
+				headers: headerKeys ?? true,
+			},
+			{ uid: true },
+		);
 		if (!msg) return null;
 		return {
 			uid: msg.uid,
@@ -282,11 +286,7 @@ export class ImapService {
 	 * Download a specific attachment by its MIME part number.
 	 * The part number comes from `bodyStructure.part` in a fetch response.
 	 */
-	async fetchMessageAttachments(
-		mailbox: string,
-		uid: string,
-		partId: string,
-	) {
+	async fetchMessageAttachments(mailbox: string, uid: string, partId: string) {
 		await this.client.mailboxOpen(mailbox);
 		const download = await this.client.download(uid, partId, { uid: true });
 		const chunks: Buffer[] = [];
@@ -338,7 +338,12 @@ export class ImapService {
 	async fetchMessagesByUids(
 		mailbox: string,
 		uids: number[],
-		query: FetchQueryObject = { envelope: true, uid: true, flags: true, bodyStructure: true },
+		query: FetchQueryObject = {
+			envelope: true,
+			uid: true,
+			flags: true,
+			bodyStructure: true,
+		},
 	): Promise<FetchMessageObject[]> {
 		await this.client.mailboxOpen(mailbox);
 		return this.client.fetchAll(uids, query, { uid: true });
@@ -486,14 +491,16 @@ export class ImapService {
 	async markAllAsRead(mailbox: string) {
 		await this.client.mailboxOpen(mailbox); // Select mailbox
 		const uids = await this.client.search({ seen: false }); // Find unread
-		if (!Array.isArray(uids) || uids.length === 0) return "No unread messages in this mailbox.";
+		if (!Array.isArray(uids) || uids.length === 0)
+			return "No unread messages in this mailbox.";
 		return this.markAsRead(uids);
 	}
 
 	async markAllAsUnread(mailbox: string) {
 		await this.client.mailboxOpen(mailbox); // Select mailbox
 		const uids = await this.client.search({ seen: true }); // Find read
-		if (!Array.isArray(uids) || uids.length === 0) return "All messages are already unread.";
+		if (!Array.isArray(uids) || uids.length === 0)
+			return "All messages are already unread.";
 		return this.markAsUnread(uids);
 	}
 	async createMailbox(mailbox: string) {
@@ -572,30 +579,92 @@ export class ImapService {
 		return true;
 	}
 
-	// ----------- Event Registration -----------
+	// ----------- Event Registration & Cleanup -----------
+
+	public lastActivity: number = Date.now();
+
+	public touch() {
+		this.lastActivity = Date.now();
+	}
 
 	/**
 	 * Register a listener for the `exists` event (new message count change).
 	 * Fires when the number of messages in the currently selected mailbox changes.
 	 */
-	onNewMessage(handler: (data: { path: string; count: number; prevCount: number }) => void) {
+	onNewMessage(
+		handler: (data: { path: string; count: number; prevCount: number }) => void,
+	) {
 		this.client.on("exists", handler);
+		return this;
+	}
+
+	/**
+	 * Remove a listener for the `exists` event to prevent memory leaks.
+	 */
+	offNewMessage(
+		handler: (data: { path: string; count: number; prevCount: number }) => void,
+	) {
+		this.client.off("exists", handler);
 		return this;
 	}
 
 	/**
 	 * Register a listener for the `expunge` event (message deleted on server).
 	 */
-	onMessageExpunged(handler: (data: { path: string; seq?: number; uid?: number; vanished: boolean }) => void) {
+	onMessageExpunged(
+		handler: (data: {
+			path: string;
+			seq?: number;
+			uid?: number;
+			vanished: boolean;
+		}) => void,
+	) {
 		this.client.on("expunge", handler);
+		return this;
+	}
+
+	/**
+	 * Remove a listener for the `expunge` event to prevent memory leaks.
+	 */
+	offMessageExpunged(
+		handler: (data: {
+			path: string;
+			seq?: number;
+			uid?: number;
+			vanished: boolean;
+		}) => void,
+	) {
+		this.client.off("expunge", handler);
 		return this;
 	}
 
 	/**
 	 * Register a listener for the `flags` event (flags updated on a message).
 	 */
-	onFlagsUpdated(handler: (data: { path: string; seq: number; uid?: number; flags: Set<string> }) => void) {
+	onFlagsUpdated(
+		handler: (data: {
+			path: string;
+			seq: number;
+			uid?: number;
+			flags: Set<string>;
+		}) => void,
+	) {
 		this.client.on("flags", handler);
+		return this;
+	}
+
+	/**
+	 * Remove a listener for the `flags` event to prevent memory leaks.
+	 */
+	offFlagsUpdated(
+		handler: (data: {
+			path: string;
+			seq: number;
+			uid?: number;
+			flags: Set<string>;
+		}) => void,
+	) {
+		this.client.off("flags", handler);
 		return this;
 	}
 
@@ -608,10 +677,26 @@ export class ImapService {
 	}
 
 	/**
+	 * Remove a listener for connection close.
+	 */
+	offClose(handler: () => void) {
+		this.client.off("close", handler);
+		return this;
+	}
+
+	/**
 	 * Register a listener for connection errors.
 	 */
 	onError(handler: (error: Error) => void) {
 		this.client.on("error", handler);
+		return this;
+	}
+
+	/**
+	 * Remove a listener for connection errors.
+	 */
+	offError(handler: (error: Error) => void) {
+		this.client.off("error", handler);
 		return this;
 	}
 

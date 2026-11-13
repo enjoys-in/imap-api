@@ -54,14 +54,47 @@ export class ImapFactory {
 	}
 
 	static getInstance(useremail: string): ImapService | undefined {
-		return ImapFactory.instances.get(useremail);
+		const service = ImapFactory.instances.get(useremail);
+		if (service) {
+			service.touch();
+		}
+		return service;
 	}
 
 	static removeInstance(useremail: string): void {
+		const service = ImapFactory.instances.get(useremail);
+		if (service) {
+			try {
+				service.removeAllListeners();
+				service.getConnection()?.close?.();
+			} catch (_) {}
+		}
 		ImapFactory.instances.delete(useremail);
 	}
 
 	static clearAll(): void {
+		for (const [, service] of ImapFactory.instances) {
+			try {
+				service.removeAllListeners();
+				service.getConnection()?.close?.();
+			} catch (_) {}
+		}
 		ImapFactory.instances.clear();
+	}
+
+	/**
+	 * Cleans up idle connections that have had no activity for `maxIdleMs`
+	 * (default: 30 minutes) and are not actively IDLE-listening.
+	 */
+	static cleanupIdle(maxIdleMs = 30 * 60 * 1000): number {
+		const now = Date.now();
+		let evicted = 0;
+		for (const [useremail, service] of ImapFactory.instances) {
+			if (!service.isIdling() && now - service.lastActivity > maxIdleMs) {
+				ImapFactory.removeInstance(useremail);
+				evicted++;
+			}
+		}
+		return evicted;
 	}
 }
