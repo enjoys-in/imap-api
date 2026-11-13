@@ -350,6 +350,68 @@ export class ImapService {
 	}
 
 	/**
+	 * Fetch detailed enriched email message summaries for a list of UIDs.
+	 */
+	async fetchDetailedMessagesByUids(mailbox: string, uids: number[]) {
+		if (!uids || uids.length === 0) return [];
+		await this.client.mailboxOpen(mailbox);
+		const lock = await this.client.getMailboxLock(mailbox, {});
+		const emails: any[] = [];
+		try {
+			const checkForAttachments = (structure: any, attachments: any[]) => {
+				if (Array.isArray(structure)) {
+					for (const part of structure) {
+						checkForAttachments(part, attachments);
+					}
+				} else if (structure) {
+					if (
+						structure.disposition &&
+						structure.disposition.type?.toLowerCase() === "attachment"
+					) {
+						attachments.push({
+							filename:
+								structure.disposition?.params?.filename ||
+								structure.parameters?.name ||
+								"unnamed",
+							mimeType: `${structure.type}/${structure.subtype}`,
+						});
+					}
+				}
+			};
+
+			for await (const message of this.client.fetch(
+				uids,
+				{
+					envelope: true,
+					uid: true,
+					flags: true,
+					bodyStructure: true,
+				},
+				{ uid: true },
+			)) {
+				const attachments: any[] = [];
+				checkForAttachments(message.bodyStructure, attachments);
+
+				emails.push({
+					message_id: message?.envelope?.messageId,
+					uid: message.uid,
+					type: message.bodyStructure?.type,
+					size: message.bodyStructure?.size,
+					subject: message?.envelope?.subject,
+					from: message?.envelope?.from?.map((f: any) => f.address).join(", "),
+					to: message?.envelope?.to?.map((t: any) => t.address).join(", "),
+					date: message?.envelope?.date,
+					flags: message.flags,
+					attachments,
+				});
+			}
+		} finally {
+			lock.release();
+		}
+		return emails;
+	}
+
+	/**
 	 * Append (upload) a message to a mailbox. Useful for saving drafts or
 	 * copying a composed message to the Sent folder.
 	 */

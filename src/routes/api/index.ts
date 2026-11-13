@@ -38,6 +38,7 @@ router.patch(
 router.get("/sync-all", ImapController.syncCompleteMailbox);
 
 // ── New IMAP function endpoints ──
+router.get("/search-emails", ImapController.searchEmails);
 router.post("/search-emails", ImapController.searchEmails);
 router.get("/fetch-headers", ImapController.fetchHeaders);
 router.get("/download-attachment", ImapController.downloadAttachment);

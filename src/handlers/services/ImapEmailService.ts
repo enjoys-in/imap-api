@@ -7,6 +7,7 @@ import {
 } from "../helpers/email.helper";
 import { resolveMailboxFolder } from "../helpers/folder.helper";
 import { normalizeEmailBody } from "../helpers/mime.helper";
+import { parseSearchQueryString } from "../helpers/search.helper";
 import {
 	sendAccepted,
 	sendError,
@@ -337,24 +338,116 @@ export class ImapEmailService {
 	}
 
 	/**
-	 * Searches emails using flexible IMAP search criteria.
+	 * Searches emails using flexible IMAP search criteria, supporting query operators
+	 * (from:, to:, subject:, body:, has:attachment, file:, is:unread, is:flagged, since:, before:)
+	 * as well as direct fuzzy search across subject, user, preview, and attachments.
+	 * Returns fully enriched email metadata objects matching the frontend schema.
 	 */
 	async searchEmails(req: Request, res: Response) {
 		try {
 			const userEmail = req.user?.email as string;
 			const imapService = await getAuthenticatedImapService(userEmail);
-			const folder = req.body?.folder || "INBOX";
-			const query = req.body?.query;
 
-			if (!query || typeof query !== "object") {
-				throw new Error("Search query object is required in request body");
+			const folderParam =
+				req.body?.folder ||
+				req.query?.folder ||
+				(req.body as any)?.folderId ||
+				(req.query as any)?.folderId ||
+				"INBOX";
+			const selectedMailbox = resolveMailboxFolder(folderParam);
+
+			const rawQuery =
+				req.body?.query !== undefined
+					? req.body.query
+					: req.body?.q !== undefined
+						? req.body.q
+						: req.query?.q !== undefined
+							? req.query.q
+							: (req.query as any)?.query;
+
+			if (!rawQuery) {
+				return sendSuccess(res, { emails: [], totalCount: 0, uids: [] });
 			}
 
-			const result = await imapService.searchMessages(
-				decodeURIComponent(folder),
-				query,
+			let imapSearchQuery: any;
+			let filterAttachment = false;
+			let filterFileName: string | undefined = undefined;
+
+			if (typeof rawQuery === "string") {
+				const parsed = parseSearchQueryString(rawQuery);
+				imapSearchQuery = parsed.imapQuery;
+				filterAttachment = !!parsed.hasAttachment;
+				filterFileName = parsed.fileName;
+			} else if (typeof rawQuery === "object") {
+				imapSearchQuery = rawQuery;
+				if (rawQuery.hasAttachment) filterAttachment = true;
+				if (rawQuery.fileName) filterFileName = String(rawQuery.fileName).toLowerCase();
+			} else {
+				imapSearchQuery = { text: String(rawQuery) };
+			}
+
+			const limit = Number(req.query?.limit || req.body?.limit || 50);
+			const foundUids = await imapService.searchMessages(
+				decodeURIComponent(selectedMailbox),
+				imapSearchQuery,
+				true,
 			);
-			return sendSuccess(res, result);
+
+			if (!foundUids || !Array.isArray(foundUids) || foundUids.length === 0) {
+				return sendSuccess(
+					res,
+					{ emails: [], totalCount: 0, uids: [] },
+					"OK",
+					{ emails: [], totalCount: 0, uids: [] },
+				);
+			}
+
+			// Sort newest first
+			const sortedUids = [...foundUids].sort((a, b) => b - a);
+			const targetUids = sortedUids.slice(0, limit);
+
+			// Fetch detailed message headers & attachment metadata for matching UIDs
+			const rawMessages = await imapService.fetchDetailedMessagesByUids(
+				decodeURIComponent(selectedMailbox),
+				targetUids,
+			);
+
+			const userMid = req.user?.uid || (req.user as any)?.mid;
+			const accountId = userMid ? `acc-${userMid}` : "acc-1";
+			let enrichedEmails = enrichEmailList(
+				cleanBigIntJson(rawMessages),
+				selectedMailbox,
+				accountId,
+			);
+
+			if (filterAttachment) {
+				enrichedEmails = enrichedEmails.filter(
+					(e: any) => e.hasAttachments || (e.attachments && e.attachments.length > 0),
+				);
+			}
+
+			if (filterFileName) {
+				enrichedEmails = enrichedEmails.filter((e: any) =>
+					e.attachments?.some((att: any) =>
+						(att.filename || "").toLowerCase().includes(filterFileName!),
+					),
+				);
+			}
+
+			return sendSuccess(
+				res,
+				{
+					emails: enrichedEmails,
+					totalCount: foundUids.length,
+					uids: foundUids,
+				},
+				"OK",
+				{
+					emails: enrichedEmails,
+					totalCount: foundUids.length,
+					uids: foundUids,
+				},
+			);
 		} catch (error) {
 			return sendError(res, error);
 		}
