@@ -9,13 +9,26 @@ import { Cache } from "@/utils/services/redis/cacheService";
 import type { Request, Response } from "express";
 import { imapCache } from "../cache/ImapCacheService";
 import { ImapFactory } from "../factory/ImapFactory";
-import { enrichMailboxList } from "../helpers/email.helper";
+import { enrichEmailList, enrichMailboxList } from "../helpers/email.helper";
 import { sendError, sendSuccess } from "../helpers/response.helper";
 import { getAuthenticatedImapService } from "../helpers/session.helper";
 import { autodiscoverConfig } from "../helpers/autodiscover.helper";
 import imapBaseService from "./imapBaseService";
+import { createTransport } from "nodemailer";
 
 const securityService = new Security();
+
+function safeDecryptPassword(rawPassword?: string): string {
+	if (!rawPassword) return "";
+	try {
+		const decrypted = securityService
+			.EncryptDecryptData(rawPassword, __CONFIG__.SECRETS.APP_SECRET)
+			.DecryptFromString();
+		return decrypted || rawPassword;
+	} catch {
+		return rawPassword;
+	}
+}
 
 export class ImapAuthService {
 	/**
@@ -104,20 +117,16 @@ export class ImapAuthService {
 
 	/**
 	 * Validates and provisions a new user connection.
+	 * If ?stream=true query is provided, delegates to setupStream for real-time progress logging.
 	 */
 	async validateNewUser(req: Request<{}, {}, ImapRequestBody>, res: Response) {
+		if (req.query?.stream === "true" || req.headers.accept?.includes("text/event-stream")) {
+			return this.setupStream(req, res);
+		}
+
 		try {
 			const skipSMTP = req.query?.skipSMTP;
-			const isUser = await imapBaseService.getUserEmail(req.body.imap_username);
-			if (isUser) {
-				return sendSuccess(
-					res,
-					null,
-					"Invalid Operation , Please Do Login",
-					{},
-					200,
-				);
-			}
+			let isUser = await imapBaseService.getUserEmail(req.body.imap_username);
 
 			const user = req.body.uses_same_credentials
 				? req.body.imap_username
@@ -126,39 +135,39 @@ export class ImapAuthService {
 				? req.body.imap_password
 				: req.body.smtp_password;
 
+			const imapPass = safeDecryptPassword(req.body.imap_password);
+			const smtpPass = safeDecryptPassword(pass);
+
 			const config: ImapRequestBody = {
 				...req.body,
-				smtp_password: pass,
-				smtp_username: user,
+				imap_password: imapPass,
+				smtp_password: smtpPass,
+				smtp_username: user || req.body.imap_username,
 			};
-
-			config.imap_password = securityService
-				.EncryptDecryptData(config.imap_password, __CONFIG__.SECRETS.APP_SECRET)
-				.DecryptFromString();
-			config.smtp_password = securityService
-				.EncryptDecryptData(config.smtp_password, __CONFIG__.SECRETS.APP_SECRET)
-				.DecryptFromString();
 
 			const { imap_configured, smtp_configured, data } =
 				await imapBaseService.setupUser(config, skipSMTP as string | undefined);
 
-			const createdUser = await imapBaseService.insertIntoDb({
-				...config,
-				imap_configured,
-				smtp_configured,
-			});
+			if (!isUser) {
+				isUser = await imapBaseService.insertIntoDb({
+					...config,
+					imap_configured,
+					smtp_configured,
+				});
+			}
 
 			const domain = MiscellaneousHelper.getOnlyDomainFromEmail(
 				req.body.imap_username,
 			);
 			const signJWT = utils.signJWT(
 				{
-					mid: createdUser.id,
+					mid: isUser.id,
 					email: req.body.imap_username,
+					display_name: isUser.display_name || req.body.imap_username.split("@")[0],
 					domain_name: domain,
 					role: AppRoles.USER,
 				},
-				`${createdUser.id}`,
+				`${isUser.id}`,
 				"60d",
 			);
 
@@ -170,9 +179,293 @@ export class ImapAuthService {
 				expires: new Date(Date.now() + 60 * 24 * 60 * 60 * 1000),
 			});
 
-			return sendSuccess(res, data, "Authenticated");
+			const enrichedMailboxes = enrichMailboxList(data, `acc-${isUser.id}`);
+			imapCache.setMailboxes(config.imap_username, enrichedMailboxes, 30);
+
+			return sendSuccess(res, data, "Authenticated", {
+				user: {
+					mid: isUser.id,
+					email: req.body.imap_username,
+					display_name: isUser.display_name || req.body.imap_username.split("@")[0],
+					domain_name: domain,
+					role: AppRoles.USER,
+				},
+				mailboxes: enrichedMailboxes,
+				token: signJWT,
+			});
 		} catch (error) {
 			return sendError(res, error);
+		}
+	}
+
+	/**
+	 * Real-time Server-Sent Events stream for first-time account setup.
+	 * Progressively executes and emits live logs:
+	 *   - [init] Configuration validation
+	 *   - [imap_connect] IMAP TLS handshake & authentication
+	 *   - [smtp_verify] Outbound SMTP transport verification
+	 *   - [mailbox_sync] Mailbox hierarchy discovery & folder synchronization
+	 *   - [email_fetch] First-time email pre-fetch (warming INBOX cache)
+	 *   - [provision_account] Provisioning account and generating session token
+	 *   - [complete] Success payload with user, token, and mailboxes
+	 */
+	async setupStream(req: Request<{}, {}, ImapRequestBody>, res: Response) {
+		res.setHeader("Content-Type", "text/event-stream");
+		res.setHeader("Cache-Control", "no-cache");
+		res.setHeader("Connection", "keep-alive");
+		res.flushHeaders?.();
+
+		const sendLog = (
+			step: string,
+			status: "running" | "success" | "warning" | "error",
+			message: string,
+			progress: number,
+			extra?: Record<string, any>,
+		) => {
+			if (!res.writableEnded) {
+				const payload = {
+					step,
+					status,
+					message,
+					progress,
+					timestamp: new Date().toISOString(),
+					...extra,
+				};
+				res.write(`data: ${JSON.stringify(payload)}\n\n`);
+			}
+		};
+
+		try {
+			sendLog("init", "running", "Validating configuration parameters...", 5);
+
+			const user = req.body.uses_same_credentials
+				? req.body.imap_username
+				: req.body.smtp_username;
+			const pass = req.body.uses_same_credentials
+				? req.body.imap_password
+				: req.body.smtp_password;
+
+			const imapPass = safeDecryptPassword(req.body.imap_password);
+			const smtpPass = safeDecryptPassword(pass);
+
+			const config: ImapRequestBody = {
+				...req.body,
+				imap_password: imapPass,
+				smtp_username: user || req.body.imap_username,
+				smtp_password: smtpPass,
+			};
+
+			if (!config.imap_host || !config.imap_username || !config.imap_password) {
+				sendLog("init", "error", "Missing required IMAP connection parameters.", 5);
+				res.end();
+				return;
+			}
+
+			// ── Stage 1: Authenticate IMAP Connection ──
+			sendLog(
+				"imap_connect",
+				"running",
+				`Connecting to IMAP server ${config.imap_host}:${config.imap_port} (SSL: ${Boolean(config.imap_secure)})...`,
+				15,
+			);
+
+			const imap = ImapFactory.getOrCreate(config.imap_username, config);
+			try {
+				const isAuth = await imap.getConnection().authenticated;
+				if (!isAuth) {
+					await imap.authenticate();
+				}
+				sendLog(
+					"imap_connect",
+					"success",
+					`IMAP connection authenticated successfully for ${config.imap_username}!`,
+					30,
+				);
+			} catch (imapErr: any) {
+				sendLog(
+					"imap_connect",
+					"error",
+					`IMAP authentication failed: ${imapErr.message || imapErr}`,
+					30,
+				);
+				res.end();
+				return;
+			}
+
+			// ── Stage 2: Verifying Outbound SMTP Transport ──
+			sendLog(
+				"smtp_verify",
+				"running",
+				`Verifying SMTP outbound server ${config.smtp_host}:${config.smtp_port}...`,
+				45,
+			);
+
+			let smtpConfigured = false;
+			const skipSMTP = req.query?.skipSMTP === "1";
+			if (!skipSMTP && config.smtp_host) {
+				try {
+					const transport = createTransport({
+						host: config.smtp_host,
+						port: Number(config.smtp_port) || 587,
+						secure: Boolean(config.smtp_secure),
+						auth: {
+							user: config.smtp_username,
+							pass: config.smtp_password,
+						},
+						connectionTimeout: 10000,
+					});
+					const verified = await transport.verify();
+					if (verified) {
+						smtpConfigured = true;
+						sendLog(
+							"smtp_verify",
+							"success",
+							`SMTP handshake verified successfully on ${config.smtp_host}:${config.smtp_port}!`,
+							60,
+						);
+					} else {
+						sendLog(
+							"smtp_verify",
+							"warning",
+							"SMTP server responded without full handshake. Continuing with IMAP...",
+							60,
+						);
+					}
+				} catch (smtpErr: any) {
+					if (skipSMTP) {
+						sendLog(
+							"smtp_verify",
+							"warning",
+							`SMTP check skipped with notice: ${smtpErr.message}`,
+							60,
+						);
+					} else {
+						sendLog(
+							"smtp_verify",
+							"error",
+							`SMTP handshake failed: ${smtpErr.message}`,
+							60,
+						);
+						res.end();
+						return;
+					}
+				}
+			} else {
+				sendLog("smtp_verify", "warning", "SMTP check skipped as requested.", 60);
+			}
+
+			// ── Stage 3: Discovering Mailbox Hierarchy & Folder Synchronization ──
+			sendLog(
+				"mailbox_sync",
+				"running",
+				"Discovering mailbox folders and synchronizing counts...",
+				70,
+			);
+
+			const rawMailboxes = await imap.syncFolders();
+			let isUser = await imapBaseService.getUserEmail(config.imap_username);
+			const userMid = isUser?.id || 1;
+			const enrichedMailboxes = enrichMailboxList(rawMailboxes, `acc-${userMid}`);
+			imapCache.setMailboxes(config.imap_username, enrichedMailboxes, 30);
+
+			sendLog(
+				"mailbox_sync",
+				"success",
+				`Discovered ${enrichedMailboxes.length} mailbox folders (${enrichedMailboxes.map((f: any) => f.displayName).join(", ")})`,
+				80,
+				{ mailboxes: enrichedMailboxes },
+			);
+
+			// ── Stage 4: First-time Email Cache Pre-Fetch ──
+			sendLog(
+				"email_fetch",
+				"running",
+				"Pre-fetching initial messages for INBOX...",
+				85,
+			);
+
+			let initialCount = 0;
+			try {
+				const inboxData = await imap.selectMailbox("INBOX", 1);
+				const enrichedEmails = enrichEmailList(
+					inboxData.emails || [],
+					"INBOX",
+					`acc-${userMid}`,
+				);
+				initialCount = enrichedEmails.length;
+				sendLog(
+					"email_fetch",
+					"success",
+					`Pre-fetched ${initialCount} initial messages for INBOX`,
+					92,
+					{ initialEmailCount: initialCount },
+				);
+			} catch (fetchErr: any) {
+				sendLog(
+					"email_fetch",
+					"warning",
+					`Initial email pre-fetch notice: ${fetchErr.message}. Messages will load on first view.`,
+					92,
+				);
+			}
+
+			// ── Stage 5: Provisioning Account & Session Token ──
+			sendLog(
+				"provision_account",
+				"running",
+				"Provisioning account in database and generating session token...",
+				95,
+			);
+
+			if (!isUser) {
+				isUser = await imapBaseService.insertIntoDb({
+					...config,
+					imap_configured: true,
+					smtp_configured: smtpConfigured,
+				});
+			}
+
+			const domain = MiscellaneousHelper.getOnlyDomainFromEmail(config.imap_username);
+			const signJWT = utils.signJWT(
+				{
+					mid: isUser.id,
+					email: config.imap_username,
+					display_name: config.display_name || config.imap_username.split("@")[0],
+					domain_name: domain,
+					role: AppRoles.USER,
+				},
+				`${isUser.id}`,
+				"60d",
+			);
+
+			res.cookie("access_token", signJWT, {
+				httpOnly: true,
+				secure: __CONFIG__.APP.APP_ENV === "PROD",
+				sameSite: __CONFIG__.APP.APP_ENV === "PROD" ? "none" : "strict",
+				maxAge: 60 * 24 * 60 * 60 * 1000,
+				expires: new Date(Date.now() + 60 * 24 * 60 * 60 * 1000),
+			});
+
+			sendLog(
+				"complete",
+				"success",
+				"Account setup complete! Welcome to AirSend.",
+				100,
+				{
+					user: {
+						mid: isUser.id,
+						email: config.imap_username,
+						display_name: config.display_name || config.imap_username.split("@")[0],
+						domain_name: domain,
+					},
+					token: signJWT,
+					mailboxes: enrichedMailboxes,
+				},
+			);
+			res.end();
+		} catch (error: any) {
+			sendLog("error", "error", `Setup error: ${error.message || error}`, 100);
+			res.end();
 		}
 	}
 

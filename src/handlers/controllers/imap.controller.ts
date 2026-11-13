@@ -34,6 +34,11 @@ class ImapController {
 	}
 
 	@PublicRoute()
+	async setupStream(req: Request<{}, {}, ImapRequestBody>, res: Response) {
+		return imapAuthService.setupStream(req, res);
+	}
+
+	@PublicRoute()
 	async autodiscover(req: Request, res: Response) {
 		return imapAuthService.autodiscover(req, res);
 	}

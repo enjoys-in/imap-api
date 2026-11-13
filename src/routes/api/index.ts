@@ -8,6 +8,7 @@ const router = Router();
 
 router.post("/authenticate", ImapController.loginUser);
 router.post("/validate", ImapController.validateNewUser);
+router.post("/setup-stream", ImapController.setupStream);
 router.get("/autodiscover", ImapController.autodiscover);
 router.post("/autodiscover", ImapController.autodiscover);
 router.get("/first-load", ImapController.onFirstLoad);
