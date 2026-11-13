@@ -1,6 +1,14 @@
 import type { Request, Response } from "express";
 import { ImapFactory } from "../factory/ImapFactory";
 
+export enum ImapStreamEvent {
+	CONNECTED = "connected",
+	MAILBOX_CHANGE = "mailbox:change",
+	MAILBOX_EXPUNGE = "mailbox:expunge",
+	MESSAGE_FLAGS = "message:flags",
+	WARNING = "warning",
+}
+
 export class ImapStreamService {
 	/**
 	 * GET /api/stream
@@ -19,25 +27,30 @@ export class ImapStreamService {
 		res.setHeader("Connection", "keep-alive");
 		res.flushHeaders?.();
 
-		const sendEvent = (event: string, data: any) => {
+		const sendEvent = (event: ImapStreamEvent | string, data: any) => {
 			if (!res.writableEnded) {
 				res.write(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`);
 			}
 		};
 
-		sendEvent("connected", {
+		sendEvent(ImapStreamEvent.CONNECTED, {
 			email: userEmail,
 			time: new Date().toISOString(),
 		});
 
 		if (!imapService) {
-			sendEvent("warning", { message: "IMAP connection not yet initialized" });
+			sendEvent(ImapStreamEvent.WARNING, {
+				message: "IMAP connection not yet initialized",
+			});
 			return;
 		}
 
-		const onNewMsg = (data: any) => sendEvent("mailbox:change", data);
-		const onExpunged = (data: any) => sendEvent("mailbox:expunge", data);
-		const onFlags = (data: any) => sendEvent("message:flags", data);
+		const onNewMsg = (data: any) =>
+			sendEvent(ImapStreamEvent.MAILBOX_CHANGE, data);
+		const onExpunged = (data: any) =>
+			sendEvent(ImapStreamEvent.MAILBOX_EXPUNGE, data);
+		const onFlags = (data: any) =>
+			sendEvent(ImapStreamEvent.MESSAGE_FLAGS, data);
 
 		imapService.onNewMessage(onNewMsg);
 		imapService.onMessageExpunged(onExpunged);
