@@ -73,7 +73,7 @@ export class usePipes {
 		return errors
 			.flatMap((err) => mapErrors(err)) // Flatten all nested errors
 			.filter((err) => !!err.constraints) // Keep only errors with messages
-			.flatMap((err) => Object.values(err.constraints)); // Flatten to a single array of messages
+			.flatMap((err) => Object.values(err.constraints || {})); // Flatten to a single array of messages
 	};
 
 	/**

@@ -54,4 +54,18 @@ router.get("/server-capabilities", ImapController.getServerCapabilities);
 router.post("/check-capability", ImapController.checkCapability);
 router.post("/refresh-capabilities", ImapController.refreshCapabilities);
 
+// ── RESTful Aliases & Modern Spec Endpoints ──
+router.get("/me", ImapController.userProfile);
+router.get("/accounts", ImapController.listAccounts);
+router.get("/mailboxes", ImapController.loadMailboxes);
+router.get("/folders", ImapController.loadMailboxes);
+router.post("/folders/:id/empty", ImapController.emptyFolder);
+router.get("/emails", ImapController.loadEmails);
+router.get("/emails/:uid/body", ImapController.loadEmailBody);
+router.delete("/emails", ImapController.moveToTrash);
+router.delete("/emails/:uid", ImapController.moveToTrash);
+router.post("/send-email", ImapController.sendEmail);
+router.get("/quota", ImapController.getQuota);
+router.get("/stream", ImapController.streamEvents);
+
 export default router;

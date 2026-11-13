@@ -11,6 +11,11 @@ router.use(
 	JwtAuth.validateUser,
 	ApiRoutes,
 );
+router.use(
+	"/api",
+	JwtAuth.validateUser,
+	ApiRoutes,
+);
 router.use("*", (req: Request, res: Response) => {
 	throw new HttpException({
 		name: "NOT_FOUND",

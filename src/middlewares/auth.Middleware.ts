@@ -53,7 +53,7 @@ export class JwtAuth {
 
 				return;
 			}
-			const token = authHeader?.replace("JWT ", "");
+			const token = authHeader?.replace(/^(JWT|Bearer)\s+/i, "").trim();
 			if (!token) {
 				res
 					.status(401)

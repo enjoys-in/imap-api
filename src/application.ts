@@ -57,7 +57,12 @@ class AppServer {
 		AppServer.App.use(morgan("dev"));
 		AppServer.App.use(
 			cors({
-				origin: ["http://localhost:9502", "http://localhost:9550"],
+				origin: [
+					"http://localhost:9502",
+					"http://localhost:9550",
+					"http://localhost:3000",
+					"http://127.0.0.1:3000",
+				],
 				optionsSuccessStatus: 200,
 				methods: ["GET", "POST", "PUT", "DELETE", "PATCH"],
 
