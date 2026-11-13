@@ -33,6 +33,11 @@ class ImapController {
 		return imapAuthService.validateNewUser(req, res);
 	}
 
+	@PublicRoute()
+	async autodiscover(req: Request, res: Response) {
+		return imapAuthService.autodiscover(req, res);
+	}
+
 	async reLogin(req: Request, res: Response) {
 		return imapAuthService.reLogin(req, res);
 	}

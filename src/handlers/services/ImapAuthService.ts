@@ -12,6 +12,7 @@ import { ImapFactory } from "../factory/ImapFactory";
 import { enrichMailboxList } from "../helpers/email.helper";
 import { sendError, sendSuccess } from "../helpers/response.helper";
 import { getAuthenticatedImapService } from "../helpers/session.helper";
+import { autodiscoverConfig } from "../helpers/autodiscover.helper";
 import imapBaseService from "./imapBaseService";
 
 const securityService = new Security();
@@ -291,6 +292,25 @@ export class ImapAuthService {
 			return sendSuccess(res, [account], "OK", { accounts: [account] });
 		} catch (error) {
 			return sendError(res, error);
+		}
+	}
+
+	/**
+	 * Autodiscovers IMAP and SMTP configurations using Thunderbird XML Autoconfig,
+	 * Outlook Autodiscover XML, and DNS MX records.
+	 */
+	async autodiscover(req: Request, res: Response) {
+		try {
+			const email = (req.query?.email ||
+				req.body?.email ||
+				req.body?.imap_username) as string;
+			if (!email) {
+				return sendError(res, "Email address is required", undefined, 400);
+			}
+			const result = await autodiscoverConfig(email);
+			return sendSuccess(res, result, "Autodiscovery successful");
+		} catch (error) {
+			return sendError(res, error, "Autodiscovery failed");
 		}
 	}
 }
