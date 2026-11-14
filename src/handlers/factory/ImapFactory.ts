@@ -5,29 +5,47 @@ import { ImapService } from "../services/ImapService";
 export class ImapFactory {
 	private static instances: Map<string, ImapService> = new Map();
 
-	static getOrCreate(useremail: string, config: ImapConfig): ImapService {
-		if (!ImapFactory.instances.has(useremail)) {
-			const service = new ImapService(config);
-			ImapFactory.instances.set(useremail, service);
+	static getOrCreate(
+		useremail: string,
+		config: ImapConfig,
+		mid?: number | string,
+	): ImapService {
+		const emailKey = useremail.toLowerCase();
+		const midKey = mid !== undefined && mid !== null ? `mid:${mid}` : null;
+
+		let service = ImapFactory.instances.get(emailKey);
+		if (!service && midKey) {
+			service = ImapFactory.instances.get(midKey);
 		}
-		return ImapFactory.instances.get(useremail)!;
+
+		if (!service) {
+			service = new ImapService(config);
+		}
+
+		ImapFactory.instances.set(emailKey, service);
+		if (midKey) {
+			ImapFactory.instances.set(midKey, service);
+		}
+
+		return service;
 	}
 
 	/**
 	 * Get the CapabilityManager for a connected user.
 	 * Returns null if the user has no active ImapService.
 	 */
-	static getCapabilities(useremail: string): CapabilityManager | null {
-		const service = ImapFactory.instances.get(useremail);
+	static getCapabilities(
+		identifier: string | number,
+	): CapabilityManager | null {
+		const service = ImapFactory.getInstance(identifier);
 		return service ? service.capabilities : null;
 	}
 
-	static async firstTimeSetup(config: ImapConfig) {
+	static async firstTimeSetup(config: ImapConfig, mid?: number | string) {
 		const emails: any = {};
-		const service = ImapFactory.getOrCreate(config.imap_username, config);
-		if (!service.getConnection().authenticated) {
+		const service = ImapFactory.getOrCreate(config.imap_username, config, mid);
+		if (!service.isConnected()) {
 			await service.authenticate();
-			// After authenticate(), capabilities are probed automatically
 		}
 		const mailboxList = await service.listMailboxes();
 		for (const mailbox of mailboxList) {
@@ -50,26 +68,46 @@ export class ImapFactory {
 	}
 
 	static getAllDomains(): string[] {
-		return Array.from(ImapFactory.instances.keys());
+		const keys = Array.from(ImapFactory.instances.keys());
+		return keys.filter((k) => !k.startsWith("mid:"));
 	}
 
-	static getInstance(useremail: string): ImapService | undefined {
-		const service = ImapFactory.instances.get(useremail);
+	static getInstance(identifier?: string | number): ImapService | undefined {
+		if (identifier === undefined || identifier === null) {
+			return undefined;
+		}
+		const key = String(identifier).toLowerCase();
+		let service = ImapFactory.instances.get(key);
+		if (!service) {
+			service = ImapFactory.instances.get(`mid:${key}`);
+		}
 		if (service) {
 			service.touch();
 		}
 		return service;
 	}
 
-	static removeInstance(useremail: string): void {
-		const service = ImapFactory.instances.get(useremail);
+	static removeInstance(identifier?: string | number): void {
+		if (identifier === undefined || identifier === null) {
+			return;
+		}
+		const service = ImapFactory.getInstance(identifier);
 		if (service) {
 			try {
 				service.removeAllListeners();
 				service.getConnection()?.close?.();
 			} catch (_) {}
+
+			for (const [key, val] of ImapFactory.instances.entries()) {
+				if (val === service) {
+					ImapFactory.instances.delete(key);
+				}
+			}
+		} else {
+			const key = String(identifier).toLowerCase();
+			ImapFactory.instances.delete(key);
+			ImapFactory.instances.delete(`mid:${key}`);
 		}
-		ImapFactory.instances.delete(useremail);
 	}
 
 	static clearAll(): void {
@@ -89,9 +127,13 @@ export class ImapFactory {
 	static cleanupIdle(maxIdleMs = 30 * 60 * 1000): number {
 		const now = Date.now();
 		let evicted = 0;
-		for (const [useremail, service] of ImapFactory.instances) {
-			if (!service.isIdling() && now - service.lastActivity > maxIdleMs) {
-				ImapFactory.removeInstance(useremail);
+		for (const [key, service] of ImapFactory.instances) {
+			if (
+				!key.startsWith("mid:") &&
+				!service.isIdling() &&
+				now - service.lastActivity > maxIdleMs
+			) {
+				ImapFactory.removeInstance(key);
 				evicted++;
 			}
 		}

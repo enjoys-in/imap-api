@@ -19,6 +19,16 @@ class ImapBaseService {
 			},
 		});
 	}
+
+	async getUserById(mid: number | string) {
+		return imapUser.findOne({
+			where: {
+				id: Number(mid),
+				first_time_setup: false,
+			},
+		});
+	}
+
 	configDTO(config: any) {
 		return {
 			imap_host: config.imap_host,
@@ -33,12 +43,14 @@ class ImapBaseService {
 			smtp_password: config.smtp_password,
 		};
 	}
-	async loginUser(config: ImapRequestBody) {
-		try {
-			const imap = ImapFactory.getOrCreate(config.imap_username, config);
 
-			!(await imap.getConnection().authenticated) &&
-				(await imap.authenticate());
+	async loginUser(config: ImapRequestBody, mid?: number | string) {
+		try {
+			const imap = ImapFactory.getOrCreate(config.imap_username, config, mid);
+
+			if (!imap.isConnected()) {
+				await imap.authenticate();
+			}
 			const data = await imap.syncFolders();
 
 			return data;
@@ -46,24 +58,22 @@ class ImapBaseService {
 			throw new Error(error);
 		}
 	}
+
 	async setupUser(
 		config: Omit<ImapRequestBody, "uses_separate_credentials">,
 		skipSMTP: string | undefined = undefined,
+		mid?: number | string,
 	) {
 		let imap_configured = false;
 		let smtp_configured = false;
 		let data: any[] | null = null;
 		try {
-			const imap = ImapFactory.getOrCreate(config.imap_username, config);
+			const imap = ImapFactory.getOrCreate(config.imap_username, config, mid);
 
-			if (imap.getConnection().authenticated) {
-				data = await imap.syncFolders();
-				await imap.logout();
-				imap.getConnection().close();
-			} else {
+			if (!imap.isConnected()) {
 				await imap.authenticate();
-				data = await imap.syncFolders();
 			}
+			data = await imap.syncFolders();
 
 			imap_configured = true;
 

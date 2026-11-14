@@ -3,6 +3,7 @@ import { Logging } from "@/logs";
 import { AppEvents } from "@/utils/services/Events";
 import { getSocketIo } from "@/utils/services/sockets/Sockets";
 import { ImapFactory } from "../factory/ImapFactory";
+import { getAuthenticatedImapService } from "../helpers/session.helper";
 import { type ImapJob, type ImapJobPayloads, ImapJobType } from "./types";
 
 /** Socket.IO event name for job status updates */
@@ -146,47 +147,47 @@ export class ImapJobProcessor {
 			case ImapJobType.DELETE_MESSAGES: {
 				const p =
 					payload as ImapJobPayloads[typeof ImapJobType.DELETE_MESSAGES];
-				const service = ImapJobProcessor.getService(p.userEmail);
+				const service = await ImapJobProcessor.getService(p.userEmail);
 				return service.deleteMessages(p.uids, p.mailbox);
 			}
 
 			case ImapJobType.DELETE_ALL_MESSAGES: {
 				const p =
 					payload as ImapJobPayloads[typeof ImapJobType.DELETE_ALL_MESSAGES];
-				const service = ImapJobProcessor.getService(p.userEmail);
+				const service = await ImapJobProcessor.getService(p.userEmail);
 				return service.deleteAllMessages(p.mailbox);
 			}
 
 			case ImapJobType.MOVE_ALL_MESSAGES: {
 				const p =
 					payload as ImapJobPayloads[typeof ImapJobType.MOVE_ALL_MESSAGES];
-				const service = ImapJobProcessor.getService(p.userEmail);
+				const service = await ImapJobProcessor.getService(p.userEmail);
 				return service.moveAllMessages(p.fromMailbox, p.toMailbox);
 			}
 
 			case ImapJobType.MARK_ALL_READ: {
 				const p = payload as ImapJobPayloads[typeof ImapJobType.MARK_ALL_READ];
-				const service = ImapJobProcessor.getService(p.userEmail);
+				const service = await ImapJobProcessor.getService(p.userEmail);
 				return service.markAllAsRead(p.mailbox);
 			}
 
 			case ImapJobType.MARK_ALL_UNREAD: {
 				const p =
 					payload as ImapJobPayloads[typeof ImapJobType.MARK_ALL_UNREAD];
-				const service = ImapJobProcessor.getService(p.userEmail);
+				const service = await ImapJobProcessor.getService(p.userEmail);
 				return service.markAllAsUnread(p.mailbox);
 			}
 
 			case ImapJobType.GLOBAL_SYNC: {
 				const p = payload as ImapJobPayloads[typeof ImapJobType.GLOBAL_SYNC];
-				const service = ImapJobProcessor.getService(p.userEmail);
+				const service = await ImapJobProcessor.getService(p.userEmail);
 				return service.globalSync(p.userEmail);
 			}
 
 			case ImapJobType.EXPUNGE_MAILBOX: {
 				const p =
 					payload as ImapJobPayloads[typeof ImapJobType.EXPUNGE_MAILBOX];
-				const service = ImapJobProcessor.getService(p.userEmail);
+				const service = await ImapJobProcessor.getService(p.userEmail);
 				// Delete messages already marked \Deleted
 				const uids = await service.searchMessages(p.mailbox, { deleted: true });
 				if (Array.isArray(uids) && uids.length > 0) {
@@ -198,7 +199,7 @@ export class ImapJobProcessor {
 			case ImapJobType.BULK_FLAG_UPDATE: {
 				const p =
 					payload as ImapJobPayloads[typeof ImapJobType.BULK_FLAG_UPDATE];
-				const service = ImapJobProcessor.getService(p.userEmail);
+				const service = await ImapJobProcessor.getService(p.userEmail);
 				if (p.addFlags?.length) {
 					await service.setCustomFlags(p.uids, p.addFlags);
 				}
@@ -216,8 +217,8 @@ export class ImapJobProcessor {
 	/**
 	 * Retrieve the ImapService instance for a user. Throws if not found.
 	 */
-	private static getService(userEmail: string) {
-		const service = ImapFactory.getInstance(userEmail);
+	private static async getService(userEmail: string) {
+		const service = await getAuthenticatedImapService(userEmail);
 		if (!service) {
 			throw new Error(
 				`No active IMAP connection for "${userEmail}". User must be logged in.`,

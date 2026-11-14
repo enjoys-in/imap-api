@@ -22,7 +22,10 @@ export class ImapStreamService {
 	 */
 	streamEvents(req: Request, res: Response): void {
 		const userEmail = req.user?.email as string;
-		const imapService = ImapFactory.getInstance(userEmail);
+		const userMid = req.user?.uid || (req.user as any)?.mid;
+		const imapService =
+			(userMid ? ImapFactory.getInstance(userMid) : null) ||
+			ImapFactory.getInstance(userEmail);
 
 		res.setHeader("Content-Type", "text/event-stream");
 		res.setHeader("Cache-Control", "no-cache");

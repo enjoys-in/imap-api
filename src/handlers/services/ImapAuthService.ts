@@ -69,7 +69,7 @@ export class ImapAuthService {
 			}
 
 			const config = imapBaseService.configDTO(isUser) as ImapRequestBody;
-			const userMailboxes = await imapBaseService.loginUser(config);
+			const userMailboxes = await imapBaseService.loginUser(config, isUser.id);
 
 			const signJWT = utils.signJWT(
 				{
@@ -281,8 +281,7 @@ export class ImapAuthService {
 
 			const imap = ImapFactory.getOrCreate(config.imap_username, config);
 			try {
-				const isAuth = await imap.getConnection().authenticated;
-				if (!isAuth) {
+				if (!imap.isConnected()) {
 					await imap.authenticate();
 				}
 				sendLog(
@@ -518,6 +517,10 @@ export class ImapAuthService {
 	async userLogout(req: Request, res: Response) {
 		try {
 			const userEmail = req.user?.email as string;
+			const userMid = req.user?.uid || (req.user as any)?.mid;
+			if (userMid) {
+				ImapFactory.removeInstance(userMid);
+			}
 			if (userEmail) {
 				ImapFactory.removeInstance(userEmail);
 				await imapCache.invalidateUser(userEmail);
@@ -548,7 +551,10 @@ export class ImapAuthService {
 			let enrichedMailboxes = await imapCache.getMailboxes(userEmail);
 
 			if (!enrichedMailboxes) {
-				const imapService = await getAuthenticatedImapService(userEmail);
+				const imapService = await getAuthenticatedImapService(
+					userEmail,
+					userMid,
+				);
 				const rawMailboxes = (await imapService.syncFolders()) || [];
 				enrichedMailboxes = enrichMailboxList(rawMailboxes, accountId);
 				await imapCache.setMailboxes(userEmail, enrichedMailboxes, 30);

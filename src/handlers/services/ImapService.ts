@@ -17,20 +17,46 @@ import {
 } from "./CapabilityManager";
 
 export class ImapService {
-	private client: ImapFlow;
-	private _capabilities: CapabilityManager;
+	private client!: ImapFlow;
+	private _capabilities!: CapabilityManager;
+	private config: ImapConfig;
 
 	constructor(config: ImapConfig) {
+		this.config = config;
+		this.initClient();
+	}
+
+	/**
+	 * Re-initializes the underlying ImapFlow client if closed or previously connected.
+	 * ImapFlow does not allow re-using an instance once connect() has been called.
+	 */
+	private initClient(): void {
+		if (this.client) {
+			try {
+				this.client.removeAllListeners?.();
+				if (this.client.usable) {
+					this.client.close();
+				}
+			} catch (_) {}
+		}
 		this.client = new ImapFlow({
-			host: config.imap_host,
-			port: config.imap_port,
+			host: this.config.imap_host,
+			port: this.config.imap_port,
 			logger: false,
-			secure: !!config?.imap_secure,
+			secure: !!this.config?.imap_secure,
 			auth: {
-				user: config.imap_username,
-				pass: config.imap_password,
+				user: this.config.imap_username,
+				pass: this.config.imap_password,
 			},
 		});
+
+		// Attach default error handler so socket errors on idle connections don't crash the process
+		this.client.on("error", (err) => {
+			Logging.dev(
+				`[ImapFlow] Connection error for ${this.config.imap_username}: ${err?.message || err}`,
+			);
+		});
+
 		this._capabilities = new CapabilityManager(this.client);
 	}
 
@@ -57,6 +83,17 @@ export class ImapService {
 	 * what changed.
 	 */
 	async authenticate() {
+		// If connection is already authenticated and usable, reuse immediately!
+		if (this.isConnected()) {
+			return;
+		}
+
+		// ImapFlow strictly prohibits re-using an instance once connect() has been called.
+		// If connect was previously called or client is not usable, create a fresh ImapFlow instance:
+		if ((this.client as any)?._connectCalled || !this.client.usable) {
+			this.initClient();
+		}
+
 		// ImapFlow populates greeting caps during connect — snapshot them as "pre-login"
 		await this.client.connect();
 
@@ -66,11 +103,19 @@ export class ImapService {
 	}
 
 	async logout() {
-		return this.client.logout();
+		try {
+			if (this.client && this.client.usable) {
+				return await this.client.logout();
+			}
+		} catch (_) {}
 	}
 
 	async closeConnection() {
-		return this.client.close();
+		try {
+			if (this.client) {
+				this.client.close();
+			}
+		} catch (_) {}
 	}
 
 	/**
