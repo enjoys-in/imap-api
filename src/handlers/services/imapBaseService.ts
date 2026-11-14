@@ -105,8 +105,6 @@ class ImapBaseService {
 				data,
 			};
 		} catch (error: any) {
-			// Never report a half-finished setup as success: callers must see the
-			// failure so they do not create a session (cookie/token) for it.
 			const stage = imap_configured
 				? "SMTP verification failed"
 				: "IMAP setup failed";

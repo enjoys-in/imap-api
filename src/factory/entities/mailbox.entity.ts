@@ -57,6 +57,17 @@ export class MailboxEntity {
 	@Column({ type: "varchar", length: 100, nullable: true })
 	highest_modseq!: string | null;
 
+	@Column({
+		type: "bigint",
+		nullable: true,
+		transformer: {
+			to: (value?: number | null) => value,
+			from: (value?: string | number | null) =>
+				value === null || value === undefined ? value : Number(value),
+		},
+	})
+	synced_uid_next!: number | null;
+
 	@CreateDateColumn({ name: "created_at" })
 	created_at!: Date;
 

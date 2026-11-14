@@ -1,3 +1,4 @@
+import { Logging } from "@/logs";
 import type { Request, Response } from "express";
 import { imapCache } from "../cache/ImapCacheService";
 import { cleanBigIntJson, enrichMailboxList } from "../helpers/email.helper";
@@ -11,6 +12,9 @@ import { getAuthenticatedImapService } from "../helpers/session.helper";
 import { ImapJobProcessor } from "../jobs/ImapJobProcessor";
 import { ImapJobType } from "../jobs/types";
 import { mailboxStorageService } from "./MailboxStorageService";
+import { messageSyncService } from "./MessageSyncService";
+
+const QUOTA_DB_FRESH_MS = 5 * 60 * 1000;
 
 export class ImapMailboxService {
 	/**
@@ -69,9 +73,7 @@ export class ImapMailboxService {
 				await imapCache.setMailboxes(userEmail, enrichedMailboxes, 60);
 			}
 
-			return sendSuccess(res, enrichedMailboxes, "OK", {
-				mailboxes: enrichedMailboxes,
-			});
+			return sendSuccess(res, enrichedMailboxes);
 		} catch (error) {
 			return sendError(res, error);
 		}
@@ -113,9 +115,11 @@ export class ImapMailboxService {
 					Number(userMid),
 					decodedFolder,
 					{
-						total_count: Number(result.totalCount ?? 0),
-						unseen_count: Number(result.unseenCount ?? 0),
+						total_count: result.total_count,
+						unseen_count: result.unseen_count,
 						uid_next: result.uidNext,
+						uid_validity: result.uidValidity,
+						highest_modseq: result.highestModseq,
 					},
 				);
 			}
@@ -133,6 +137,44 @@ export class ImapMailboxService {
 	 * Runs a global sync across all mailboxes for the current user.
 	 * Updates both folders and storage quota in PostgreSQL.
 	 */
+	private async syncAllFolders(
+		imapService: Awaited<ReturnType<typeof getAuthenticatedImapService>>,
+		userEmail: string,
+		connectionId: number,
+		folders: any[],
+	) {
+		const messages: Record<string, unknown> = {};
+		for (const folder of folders) {
+			if (!imapService.isSelectable(folder)) {
+				messages[folder.name] = {
+					info: folder,
+					total_count: 0,
+					uidNext: null,
+					unseen_count: 0,
+					emails: [],
+					hasMore: false,
+				};
+				continue;
+			}
+			const page = await messageSyncService.getPage(
+				imapService,
+				connectionId,
+				folder.path,
+				0,
+				50,
+			);
+			messages[folder.name] = {
+				info: folder,
+				total_count: page.totalCount,
+				uidNext: page.uidNext,
+				unseen_count: folder.unseen_count,
+				emails: page.emails.reverse(),
+				hasMore: page.hasMore,
+			};
+		}
+		return { email: userEmail, mailboxList: folders, messages };
+	}
+
 	async syncCompleteMailbox(req: Request, res: Response) {
 		try {
 			const userEmail = req.user?.email as string;
@@ -152,10 +194,14 @@ export class ImapMailboxService {
 							quotaData,
 						);
 					}
-				} catch (_) {}
+				} catch (err: any) {
+					Logging.dev(`Quota sync skipped: ${err?.message}`);
+				}
 			}
 
-			const emails = await imapService.globalSync(userEmail);
+			const emails = userMid
+				? await this.syncAllFolders(imapService, userEmail, Number(userMid), rawBoxes)
+				: await imapService.globalSync(userEmail);
 
 			await imapCache.invalidateMailboxes(userEmail);
 			await imapCache.invalidateQuota(userEmail);
@@ -282,18 +328,25 @@ export class ImapMailboxService {
 				(req.query?.mailbox || req.query?.folder || "INBOX") as string,
 			);
 
+			if (!userMid) {
+				throw new Error("Login required");
+			}
+
 			// 1. Check in-memory/redis cache
 			let quotaResult = !forceSync
 				? await imapCache.getQuota(userEmail, mailbox)
 				: null;
 
 			// 2. Check PostgreSQL database (sub-millisecond instant response)
-			if (!quotaResult && userMid && !forceSync) {
+			if (!quotaResult && !forceSync) {
 				const storedQuota = await mailboxStorageService.getQuota(
 					Number(userMid),
 					mailbox,
 				);
-				if (storedQuota) {
+				if (
+				storedQuota &&
+				Date.now() - storedQuota.updated_at.getTime() < QUOTA_DB_FRESH_MS
+			) {
 					quotaResult = mailboxStorageService.formatQuotaForClient(storedQuota);
 					await imapCache.setQuota(userEmail, mailbox, quotaResult, 120);
 				}
@@ -305,36 +358,17 @@ export class ImapMailboxService {
 					userEmail,
 					userMid,
 				);
-				try {
-					quotaResult = await imapService.getQuota(mailbox);
-				} catch {
-					quotaResult = null;
-				}
-
-				if (!quotaResult) {
-					quotaResult = {
-						storage: {
-							used: 104857600,
-							limit: 1073741824,
-							percentage: 9.77,
-						},
-						messages: { used: 250, limit: 10000 },
-					};
-				}
-
-				if (userMid) {
-					const savedQuota = await mailboxStorageService.saveQuota(
-						Number(userMid),
-						mailbox,
-						quotaResult,
-					);
-					quotaResult = mailboxStorageService.formatQuotaForClient(savedQuota);
-				}
-
+				const liveQuota = await imapService.getQuota(mailbox);
+				const savedQuota = await mailboxStorageService.saveQuota(
+					Number(userMid),
+					mailbox,
+					liveQuota,
+				);
+				quotaResult = mailboxStorageService.formatQuotaForClient(savedQuota);
 				await imapCache.setQuota(userEmail, mailbox, quotaResult, 120);
 			}
 
-			return sendSuccess(res, quotaResult, "OK", { quota: quotaResult });
+			return sendSuccess(res, quotaResult);
 		} catch (error) {
 			return sendError(res, error);
 		}

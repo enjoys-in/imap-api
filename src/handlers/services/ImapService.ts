@@ -7,6 +7,7 @@ import {
 	type ListResponse,
 	type ListTreeResponse,
 	type MessageEnvelopeObject,
+	type MessageStructureObject,
 	type SearchObject,
 } from "imapflow";
 import { type ParsedMail, simpleParser } from "mailparser";
@@ -15,6 +16,66 @@ import {
 	CapabilityNotSupportedError,
 	ImapCapability,
 } from "./CapabilityManager";
+
+const MESSAGE_QUERY: FetchQueryObject = {
+	envelope: true,
+	uid: true,
+	flags: true,
+	bodyStructure: true,
+	size: true,
+};
+
+function collectAttachments(
+	structure: MessageStructureObject | undefined,
+	found: { filename: string; mimeType: string }[],
+) {
+	if (!structure) {
+		return;
+	}
+	if (structure.disposition === "attachment") {
+		found.push({
+			filename:
+				structure.dispositionParameters?.filename ||
+				structure.parameters?.name ||
+				"unnamed",
+			mimeType: structure.type,
+		});
+	}
+	for (const child of structure.childNodes ?? []) {
+		collectAttachments(child, found);
+	}
+}
+
+export function toEmailSummary(message: FetchMessageObject) {
+	const attachments: { filename: string; mimeType: string }[] = [];
+	collectAttachments(message.bodyStructure, attachments);
+	return {
+		message_id: message.envelope?.messageId,
+		uid: message.uid,
+		type: message.bodyStructure?.type,
+		size: message.size ?? message.bodyStructure?.size,
+		subject: message.envelope?.subject,
+		from: message.envelope?.from?.map((f) => f.address).join(", "),
+		to: message.envelope?.to?.map((t) => t.address).join(", "),
+		date: message.envelope?.date,
+		flags: message.flags,
+		attachments,
+	};
+}
+
+export type EmailSummary = ReturnType<typeof toEmailSummary>;
+
+export interface MailboxSession {
+	info: {
+		exists: number;
+		uidNext: number;
+		uidValidity: number;
+		highestModseq: string | null;
+	};
+	fetch(range: string, byUid: boolean): Promise<EmailSummary[]>;
+	flags(uids: number[]): Promise<Map<number, string[]>>;
+	search(query: SearchObject): Promise<number[]>;
+}
 
 export class ImapService {
 	private client!: ImapFlow;
@@ -131,6 +192,12 @@ export class ImapService {
 	async listMailboxes() {
 		return this.client.list();
 	}
+	isSelectable(mailbox: ListResponse): boolean {
+		const flags = Array.from(mailbox.flags ?? [], (f) =>
+			String(f).toLowerCase(),
+		);
+		return !flags.includes("\\noselect") && !flags.includes("\\nonexistent");
+	}
 	async openedMailbox(mailbox = "INBOX") {
 		return this.client.mailboxOpen(mailbox);
 	}
@@ -141,8 +208,20 @@ export class ImapService {
 		}
 		const mailboxList = await this.listMailboxes();
 		for (const mailbox of mailboxList) {
-			const searchResult = await this.listUnseenOnly();
+			if (!this.isSelectable(mailbox)) {
+				emails[mailbox.name] = {
+					info: mailbox,
+					total_count: 0,
+					uidNext: null,
+					unseen_count: 0,
+					emails: [],
+					hasMore: false,
+				};
+				continue;
+			}
 			const data = await this.selectMailbox(mailbox.path);
+			const searchResult =
+				data.totalCount > 0 ? await this.listUnseenOnly() : [];
 			emails[mailbox.name] = {
 				info: mailbox,
 				total_count: data.totalCount,
@@ -171,20 +250,22 @@ export class ImapService {
 		for (const mailbox of mailboxList) {
 			let totalCount = 0;
 			let unseenCount = 0;
+			let uidValidity: number | null = null;
+			let uidNext: number | null = null;
+			let highestModseq: string | null = null;
 
-			// \Noselect / \NonExistent entries (e.g. hierarchy parents) cannot be
-			// opened; they have no messages, so report zero instead of failing the sync.
-			const flags = Array.from(mailbox.flags ?? [], (f) => String(f).toLowerCase());
-			const selectable =
-				!flags.includes("\\noselect") && !flags.includes("\\nonexistent");
-
-			if (selectable) {
-				// Select first, then count: SEARCH only applies to the selected mailbox.
-				// Only counts are needed here, so no message FETCH is issued.
+			if (this.isSelectable(mailbox)) {
 				const lock = await this.client.getMailboxLock(mailbox.path, {});
 				try {
 					const opened = this.client.mailbox;
-					totalCount = opened ? opened.exists : 0;
+					if (opened) {
+						totalCount = opened.exists;
+						uidValidity = opened.uidValidity ? Number(opened.uidValidity) : null;
+						uidNext = opened.uidNext ?? null;
+						highestModseq = opened.highestModseq
+							? String(opened.highestModseq)
+							: null;
+					}
 					if (totalCount > 0) {
 						const unseen = await this.listUnseenOnly();
 						unseenCount = Array.isArray(unseen) ? unseen.length : 0;
@@ -199,6 +280,9 @@ export class ImapService {
 				...mailbox,
 				total_count: totalCount,
 				unseen_count: unseenCount,
+				uidValidity,
+				uidNext,
+				highestModseq,
 			});
 			id++;
 		}
@@ -220,24 +304,30 @@ export class ImapService {
 			subscribed: emails.subscribed,
 			total_count: emails.exists,
 			unseen_count: Array.isArray(unseenCount) ? unseenCount.length : 0,
+			uidNext: emails.uidNext,
+			uidValidity: Number(emails.uidValidity),
+			highestModseq: emails.highestModseq
+				? String(emails.highestModseq)
+				: undefined,
 		};
 	}
-	async selectMailbox(mailbox = "INBOX", start = 1) {
+	async selectMailbox(mailbox = "INBOX", offset = 0, limit = 50) {
 		const {
 			exists: totalCount,
 			uidNext,
 			uidValidity,
-			mailboxId,
 			flags,
 		} = await this.client.mailboxOpen(mailbox);
-		const emails = [];
+		const emails: EmailSummary[] = [];
 
-		// An empty mailbox has no valid sequence numbers (not even "*"), so strict
-		// servers such as Gluon reject `FETCH 1:*` with `BAD no such message`.
-		if (!totalCount) {
+		const skip = Math.max(0, Math.floor(Number(offset) || 0));
+		const size = Math.max(1, Math.floor(Number(limit) || 50));
+		const endSeq = totalCount - skip;
+
+		if (endSeq < 1) {
 			return {
 				emails,
-				totalCount: 0,
+				totalCount,
 				hasMore: false,
 				uidNext,
 				uidValidity,
@@ -245,51 +335,12 @@ export class ImapService {
 			};
 		}
 
+		const startSeq = Math.max(endSeq - size + 1, 1);
+		const range = `${startSeq}:${endSeq}`;
 		const lock = await this.client.getMailboxLock(mailbox, {});
-		const endSeq = totalCount - start;
-		const startSeq = Math.max(endSeq - 50 + 1, 1);
-
-		const range = `${startSeq}:${endSeq < 50 ? "*" : endSeq}`;
 		try {
-			const checkForAttachments = (structure: any, attachments: any[]) => {
-				if (Array.isArray(structure)) {
-					for (const part of structure) {
-						checkForAttachments(part, attachments);
-					}
-				} else {
-					if (
-						structure.disposition &&
-						structure.disposition.type?.toLowerCase() === "attachment"
-					) {
-						attachments.push({
-							filename: structure.disposition?.params?.filename || "unnamed",
-							mimeType: `${structure.type}/${structure.subtype}`,
-						});
-					}
-				}
-			};
-
-			for await (const message of this.client.fetch(range, {
-				envelope: true,
-				uid: true,
-				flags: true,
-				bodyStructure: true,
-			})) {
-				const attachments: any[] = [];
-				checkForAttachments(message.bodyStructure, attachments);
-
-				emails.push({
-					message_id: message?.envelope?.messageId,
-					uid: message.uid,
-					type: message.bodyStructure?.type,
-					size: message.bodyStructure?.size,
-					subject: message?.envelope?.subject,
-					from: message?.envelope?.from?.map((f) => f.address).join(", "),
-					to: message?.envelope?.to?.map((t) => t.address).join(", "),
-					date: message?.envelope?.date,
-					flags: message.flags,
-					attachments,
-				});
+			for await (const message of this.client.fetch(range, MESSAGE_QUERY)) {
+				emails.push(toEmailSummary(message));
 			}
 		} finally {
 			lock.release();
@@ -298,11 +349,59 @@ export class ImapService {
 		return {
 			emails,
 			totalCount,
-			hasMore: endSeq - 50 > 0,
+			hasMore: startSeq > 1,
 			uidNext,
 			uidValidity,
 			flags,
 		};
+	}
+	async withMailbox<T>(
+		path: string,
+		run: (box: MailboxSession) => Promise<T>,
+	): Promise<T> {
+		const lock = await this.client.getMailboxLock(path, {});
+		try {
+			const opened = await this.client.mailboxOpen(path);
+			return await run({
+				info: {
+					exists: opened.exists,
+					uidNext: opened.uidNext,
+					uidValidity: Number(opened.uidValidity),
+					highestModseq: opened.highestModseq
+						? String(opened.highestModseq)
+						: null,
+				},
+				fetch: async (range, byUid) => {
+					const found: EmailSummary[] = [];
+					for await (const message of this.client.fetch(range, MESSAGE_QUERY, {
+						uid: byUid,
+					})) {
+						found.push(toEmailSummary(message));
+					}
+					return found;
+				},
+				flags: async (uids) => {
+					const current = new Map<number, string[]>();
+					if (uids.length === 0) {
+						return current;
+					}
+					for await (const message of this.client.fetch(
+						uids.join(","),
+						{ uid: true, flags: true },
+						{ uid: true },
+					)) {
+						current.set(message.uid, Array.from(message.flags ?? []));
+					}
+					return current;
+				},
+				search: async (query) => {
+					const found = await this.client.search(query, { uid: true });
+					return Array.isArray(found) ? found : [];
+				},
+			});
+		} finally {
+			lock.release();
+		}
 	}
 	async listUnseenOnly() {
 		return this.client.search({ seen: false }, { uid: true });
@@ -312,8 +411,11 @@ export class ImapService {
 	}
 
 	async fetchMessages(mailbox = "INBOX") {
-		await this.client.mailboxOpen(mailbox);
-		const messages = [];
+		const opened = await this.client.mailboxOpen(mailbox);
+		const messages: FetchMessageObject[] = [];
+		if (!opened.exists) {
+			return messages;
+		}
 		for await (const msg of this.client.fetch("1:*", {
 			envelope: true,
 			uid: true,

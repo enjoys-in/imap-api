@@ -33,6 +33,21 @@ export class MailboxStorageService {
 		});
 	}
 
+	async ensureMailbox(
+		connectionId: number,
+		path: string,
+	): Promise<MailboxEntity> {
+		const existing = await this.getMailboxByPath(connectionId, path);
+		if (existing) {
+			return existing;
+		}
+		await this.mailboxRepo.upsert(
+			[{ connection_id: connectionId, name: path, path }],
+			["connection_id", "path"],
+		);
+		return (await this.getMailboxByPath(connectionId, path))!;
+	}
+
 	/**
 	 * Persist raw IMAP mailbox metadata into PostgreSQL.
 	 * Performs atomic upsert and prunes removed mailboxes.
@@ -52,6 +67,8 @@ export class MailboxStorageService {
 			const unseenCount = Number(
 				box.unseen_count ?? box.status?.unseen ?? box.unseen ?? 0,
 			);
+			const modseq =
+				box.status?.highestModseq ?? box.highestModseq ?? box.highest_modseq;
 
 			return {
 				connection_id: connectionId,
@@ -69,11 +86,7 @@ export class MailboxStorageService {
 					box.uid_validity ??
 					null,
 				uid_next: box.status?.uidNext ?? box.uidNext ?? box.uid_next ?? null,
-				highest_modseq: box.status?.highestModseq
-					? String(box.status.highestModseq)
-					: box.highest_modseq
-						? String(box.highest_modseq)
-						: null,
+				highest_modseq: modseq ? String(modseq) : null,
 			};
 		});
 
@@ -104,6 +117,8 @@ export class MailboxStorageService {
 			total_count?: number;
 			unseen_count?: number;
 			uid_next?: number;
+			uid_validity?: number;
+			synced_uid_next?: number;
 			highest_modseq?: string;
 		},
 	): Promise<void> {
@@ -116,6 +131,12 @@ export class MailboxStorageService {
 		}
 		if (counts.uid_next !== undefined) {
 			updateData.uid_next = counts.uid_next;
+		}
+		if (counts.uid_validity !== undefined) {
+			updateData.uid_validity = counts.uid_validity;
+		}
+		if (counts.synced_uid_next !== undefined) {
+			updateData.synced_uid_next = counts.synced_uid_next;
 		}
 		if (counts.highest_modseq !== undefined) {
 			updateData.highest_modseq = counts.highest_modseq;
@@ -160,32 +181,33 @@ export class MailboxStorageService {
 		mailbox = "INBOX",
 		quotaData: any,
 	): Promise<MailboxQuotaEntity> {
-		const storageUsed = Number(
-			quotaData?.storage?.used ?? quotaData?.usage ?? 0,
-		);
-		const storageLimit = Number(
-			quotaData?.storage?.limit ?? quotaData?.limit ?? 1073741824,
-		);
-		const storagePercentage =
-			storageLimit > 0
-				? Number(((storageUsed / storageLimit) * 100).toFixed(2))
-				: 0;
+		const quota = this.normalizeQuota(quotaData);
+		if (!quota) {
+			throw new Error("Quota is not available from the IMAP server");
+		}
 
-		const messagesUsed = Number(
-			quotaData?.messages?.used ?? quotaData?.messageCount ?? 0,
-		);
-		const messagesLimit = Number(
-			quotaData?.messages?.limit ?? quotaData?.messageLimit ?? 10000,
-		);
+		const messagesUsed =
+			quota.messagesUsed ??
+			(await this.getMailboxes(connectionId)).reduce(
+				(sum, box) => sum + Number(box.total_count),
+				0,
+			);
+		const storagePercentage =
+			quota.storageLimit > 0
+				? Math.min(
+					Number(((quota.storageUsed / quota.storageLimit) * 100).toFixed(2)),
+					999.99,
+					)
+				: 0;
 
 		const entityData: Partial<MailboxQuotaEntity> = {
 			connection_id: connectionId,
 			mailbox,
-			storage_used: storageUsed,
-			storage_limit: storageLimit,
+			storage_used: quota.storageUsed,
+			storage_limit: quota.storageLimit,
 			storage_percentage: storagePercentage,
 			messages_used: messagesUsed,
-			messages_limit: messagesLimit,
+			messages_limit: quota.messagesLimit,
 		};
 
 		await this.quotaRepo.upsert([entityData], ["connection_id", "mailbox"]);
@@ -195,6 +217,22 @@ export class MailboxStorageService {
 		}))!;
 	}
 
+	private normalizeQuota(raw: any) {
+		const storage = raw?.storage;
+		const messages = raw?.message ?? raw?.messages;
+		if (!storage && !messages) {
+			return null;
+		}
+		return {
+			storageUsed: Number(storage?.usage ?? storage?.used ?? 0),
+			storageLimit: Number(storage?.limit ?? 0),
+			messagesUsed: messages
+				? Number(messages.usage ?? messages.used ?? 0)
+				: null,
+			messagesLimit: Number(messages?.limit ?? 0),
+		};
+	}
+
 	/**
 	 * Retrieve stored quota for a connection from the database.
 	 */
@@ -202,16 +240,9 @@ export class MailboxStorageService {
 		connectionId: number,
 		mailbox = "INBOX",
 	): Promise<MailboxQuotaEntity | null> {
-		let quota = await this.quotaRepo.findOne({
+		return this.quotaRepo.findOne({
 			where: { connection_id: connectionId, mailbox },
 		});
-		if (!quota) {
-			// Fallback to any recorded quota for this connection
-			quota = await this.quotaRepo.findOne({
-				where: { connection_id: connectionId },
-			});
-		}
-		return quota;
 	}
 
 	/**
@@ -222,7 +253,7 @@ export class MailboxStorageService {
 		accountId = "acc-1",
 	): any[] {
 		return entities.map((box, index) => {
-			const special = getFolderSpecial(box.name, box.special_use);
+			const special = getFolderSpecial(box.name, box.special_use ?? undefined);
 			return {
 				id: `fld-${box.id}`,
 				numericId: box.id,
@@ -237,7 +268,7 @@ export class MailboxStorageService {
 				listed: box.listed,
 				subscribed: box.subscribed,
 				parentFullName: null,
-				uidValidity: box.uid_validity ? Number(box.uid_validity) : 20261113,
+				uidValidity: box.uid_validity ? Number(box.uid_validity) : null,
 				uidNext: box.uid_next,
 				highestModseq: box.highest_modseq,
 				unreadCount: box.unseen_count,
@@ -253,16 +284,7 @@ export class MailboxStorageService {
 	/**
 	 * Format MailboxQuotaEntity into standard client quota schema.
 	 */
-	formatQuotaForClient(quota: MailboxQuotaEntity | null): any {
-		if (!quota) {
-			return {
-				storage: { used: 0, limit: 1073741824, percentage: 0 },
-				messages: { used: 0, limit: 10000 },
-				mailbox: "INBOX",
-				updatedAt: new Date().toISOString(),
-			};
-		}
-
+	formatQuotaForClient(quota: MailboxQuotaEntity): any {
 		return {
 			storage: {
 				used: Number(quota.storage_used),

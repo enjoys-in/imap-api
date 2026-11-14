@@ -1,12 +1,3 @@
-/**
- * Builds a readable message from an IMAP/connection error.
- *
- * Node wraps multi-address connect failures (e.g. localhost -> ::1 + 127.0.0.1)
- * in an `AggregateError` whose own `.message` is empty, so the per-address
- * failures in `err.errors` are summarised instead, e.g.
- * `ECONNREFUSED ::1:25, 127.0.0.1:25`. `err.code` and ImapFlow's
- * `err.responseText` are appended when they add information.
- */
 export function formatImapError(err: any): string {
   if (!err) return "Unknown error";
   if (typeof err === "string") return err;

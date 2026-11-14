@@ -16,6 +16,7 @@ import { parseSearchQueryString } from "../helpers/search.helper";
 import { getAuthenticatedImapService } from "../helpers/session.helper";
 import { ImapJobProcessor } from "../jobs/ImapJobProcessor";
 import { ImapJobType } from "../jobs/types";
+import { messageSyncService } from "./MessageSyncService";
 
 export class ImapEmailService {
 	/**
@@ -38,12 +39,12 @@ export class ImapEmailService {
 	) {
 		try {
 			const query = req.query;
-			const limit = Number(query.limit || 50);
-			let page = Number(query.page || 1);
-			if (query.offset !== undefined && !query.page) {
-				page = Math.floor(Number(query.offset) / limit) + 1;
-			}
-			const offset = (page - 1 === 0 ? 1 : page - 1) * limit;
+			const limit = Math.max(1, Number(query.limit) || 50);
+			const page = Math.max(1, Number(query.page) || 1);
+			const offset =
+				query.offset !== undefined && !query.page
+					? Math.max(0, Number(query.offset) || 0)
+					: (page - 1) * limit;
 			const selectedMailbox = resolveMailboxFolder(
 				query.folder || query.folderId,
 			);
@@ -51,13 +52,19 @@ export class ImapEmailService {
 			const userEmail = req.user?.email as string;
 			const imapService = await getAuthenticatedImapService(userEmail);
 
-			const emails = await imapService.selectMailbox(
-				decodeURIComponent(selectedMailbox),
-				offset,
-			);
+			const userMid = req.user?.uid || (req.user as any)?.mid;
+			const mailboxPath = decodeURIComponent(selectedMailbox);
+			const emails = userMid
+				? await messageSyncService.getPage(
+						imapService,
+						Number(userMid),
+						mailboxPath,
+						offset,
+						limit,
+					)
+				: await imapService.selectMailbox(mailboxPath, offset, limit);
 			const cleanObject = cleanBigIntJson(emails);
 
-			const userMid = req.user?.uid || (req.user as any)?.mid;
 			const accountId = userMid ? `acc-${userMid}` : "acc-1";
 			const enrichedEmails = enrichEmailList(
 				cleanObject.emails || [],
@@ -65,19 +72,10 @@ export class ImapEmailService {
 				accountId,
 			);
 
-			return sendSuccess(
-				res,
-				{
-					...cleanObject,
-					emails: enrichedEmails,
-				},
-				"OK",
-				{
-					emails: enrichedEmails,
-					totalCount: cleanObject.totalCount,
-					hasMore: cleanObject.hasMore,
-				},
-			);
+			return sendSuccess(res, {
+				...cleanObject,
+				emails: enrichedEmails,
+			});
 		} catch (error) {
 			return sendError(res, error);
 		}
@@ -113,11 +111,7 @@ export class ImapEmailService {
 				uid,
 			);
 			if (cached) {
-				return sendSuccess(res, cached, "OK", {
-					bodyHtml: cached.bodyHtml,
-					bodyText: cached.bodyText,
-					attachments: cached.attachments,
-				});
+				return sendSuccess(res, cached);
 			}
 
 			const imapService = await getAuthenticatedImapService(userEmail);
@@ -138,11 +132,7 @@ export class ImapEmailService {
 				600,
 			);
 
-			return sendSuccess(res, resultData, "OK", {
-				bodyHtml: resultData.bodyHtml,
-				bodyText: resultData.bodyText,
-				attachments: resultData.attachments,
-			});
+			return sendSuccess(res, resultData);
 		} catch (error) {
 			return sendError(res, error);
 		}
@@ -405,11 +395,7 @@ export class ImapEmailService {
 			);
 
 			if (!foundUids || !Array.isArray(foundUids) || foundUids.length === 0) {
-				return sendSuccess(res, { emails: [], totalCount: 0, uids: [] }, "OK", {
-					emails: [],
-					totalCount: 0,
-					uids: [],
-				});
+				return sendSuccess(res, { emails: [], totalCount: 0, uids: [] });
 			}
 
 			// Sort newest first
@@ -445,20 +431,11 @@ export class ImapEmailService {
 				);
 			}
 
-			return sendSuccess(
-				res,
-				{
-					emails: enrichedEmails,
-					totalCount: foundUids.length,
-					uids: foundUids,
-				},
-				"OK",
-				{
-					emails: enrichedEmails,
-					totalCount: foundUids.length,
-					uids: foundUids,
-				},
-			);
+			return sendSuccess(res, {
+				emails: enrichedEmails,
+				totalCount: foundUids.length,
+				uids: foundUids,
+			});
 		} catch (error) {
 			return sendError(res, error);
 		}

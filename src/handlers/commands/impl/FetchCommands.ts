@@ -8,11 +8,11 @@ export class FetchMessagesCommand implements IImapCommand {
 	readonly name = "FetchMessages";
 	constructor(
 		private readonly mailbox: string,
-		private readonly start: number,
+		private readonly offset: number,
 	) {}
 
 	async execute(service: ImapService) {
-		return service.selectMailbox(this.mailbox, this.start);
+		return service.selectMailbox(this.mailbox, this.offset);
 	}
 }
 

@@ -47,7 +47,7 @@ export function enrichMailboxList(
 			displayName: box.name,
 			parentFullName: null,
 			special,
-			uidValidity: box.uidValidity || 20261113,
+			uidValidity: box.uidValidity ?? null,
 			unreadCount: Number(box.unseen_count || 0),
 			totalCount: Number(box.total_count || 0),
 			lastSyncedAt: new Date().toISOString(),

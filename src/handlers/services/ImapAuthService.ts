@@ -81,8 +81,6 @@ export class ImapAuthService {
       // Cache folder list with 30s TTL
       await imapCache.setMailboxes(username, enrichedMailboxes, 30);
 
-      // Everything that can fail has succeeded: only now issue the session
-      // (token + cookie) and report success.
       const signJWT = utils.signJWT(
         {
           display_name: isUser.display_name,
@@ -180,8 +178,6 @@ export class ImapAuthService {
       const enrichedMailboxes = enrichMailboxList(data, `acc-${isUser.id}`);
       await imapCache.setMailboxes(config.imap_username, enrichedMailboxes, 30);
 
-      // Everything that can fail has succeeded: only now issue the session
-      // (token + cookie) and report success.
       const domain = MiscellaneousHelper.getOnlyDomainFromEmail(
         req.body.imap_username,
       );
@@ -442,7 +438,7 @@ export class ImapAuthService {
 
       let initialCount = 0;
       try {
-        const inboxData = await imap.selectMailbox("INBOX", 1);
+        const inboxData = await imap.selectMailbox("INBOX");
         const enrichedEmails = enrichEmailList(
           inboxData.emails || [],
           "INBOX",
@@ -507,8 +503,6 @@ export class ImapAuthService {
         "60d",
       );
 
-      // No cookie here: the SSE headers were already flushed, so Set-Cookie can
-      // no longer be sent. The client takes the token from the "complete" event.
       sendLog(
         "complete",
         "success",
@@ -632,18 +626,8 @@ export class ImapAuthService {
         await imapCache.setMailboxes(userEmail, enrichedMailboxes, 60);
       }
 
-      return sendSuccess(
-        res,
-        {
-          ...req.user,
-          mailboxes: enrichedMailboxes,
-        },
-        "OK",
-        {
-          user: req.user,
-          mailboxes: enrichedMailboxes,
-        },
-      );
+      const { iat, exp, iss, ...profile } = req.user as any;
+      return sendSuccess(res, { ...profile, mailboxes: enrichedMailboxes });
     } catch (error) {
       return sendError(res, error);
     }
@@ -682,7 +666,7 @@ export class ImapAuthService {
         requiresSignIn: false,
       };
 
-      return sendSuccess(res, [account], "OK", { accounts: [account] });
+      return sendSuccess(res, [account]);
     } catch (error) {
       return sendError(res, error);
     }

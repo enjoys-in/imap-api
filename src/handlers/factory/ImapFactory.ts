@@ -49,8 +49,19 @@ export class ImapFactory {
 		}
 		const mailboxList = await service.listMailboxes();
 		for (const mailbox of mailboxList) {
-			const searchResult = await service.listUnseenOnly();
+			if (!service.isSelectable(mailbox)) {
+				emails[mailbox.name] = {
+					info: mailbox,
+					total_count: 0,
+					unseen_count: 0,
+					emails: [],
+					hasMore: false,
+				};
+				continue;
+			}
 			const data = await service.selectMailbox(mailbox.path);
+			const searchResult =
+				data.totalCount > 0 ? await service.listUnseenOnly() : [];
 			emails[mailbox.name] = {
 				info: mailbox,
 				total_count: data.totalCount,
