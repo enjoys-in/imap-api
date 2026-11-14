@@ -1,5 +1,7 @@
 import type { Request, Response } from "express";
 import { ImapFactory } from "../factory/ImapFactory";
+import { vacationSenderService } from "./VacationSenderService";
+import { Logging } from "@/logs";
 
 export enum ImapStreamEvent {
 	CONNECTED = "connected",
@@ -45,8 +47,28 @@ export class ImapStreamService {
 			return;
 		}
 
-		const onNewMsg = (data: any) =>
+		const onNewMsg = (data: any) => {
 			sendEvent(ImapStreamEvent.MAILBOX_CHANGE, data);
+
+			// If new message arrived, check and trigger vacation auto-reply asynchronously
+			if (data && data.count > (data.prevCount ?? 0)) {
+				setImmediate(async () => {
+					try {
+						const latestMsg = await imapService.fetchLatestMessageContext(
+							data.path || "INBOX",
+						);
+						if (latestMsg) {
+							await vacationSenderService.evaluateAndSendVacationReply(
+								userEmail,
+								latestMsg,
+							);
+						}
+					} catch (err: any) {
+						Logging.dev(`[ImapStreamService AutoReply Check] ${err?.message}`);
+					}
+				});
+			}
+		};
 		const onExpunged = (data: any) =>
 			sendEvent(ImapStreamEvent.MAILBOX_EXPUNGE, data);
 		const onFlags = (data: any) =>

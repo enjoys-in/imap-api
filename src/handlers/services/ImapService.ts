@@ -1,4 +1,5 @@
 import type { ImapConfig } from "@/utils/interfaces/imap.interface";
+import { Logging } from "@/logs";
 import {
 	type FetchMessageObject,
 	type FetchQueryObject,
@@ -760,6 +761,68 @@ export class ImapService {
 	offError(handler: (error: Error) => void) {
 		this.client.off("error", handler);
 		return this;
+	}
+
+	/**
+	 * Fetches lightweight envelope and parsed headers for the latest inbound message
+	 * in a mailbox (used for vacation reply evaluation and push notifications).
+	 */
+	async fetchLatestMessageContext(mailbox = "INBOX"): Promise<{
+		fromAddress: string;
+		toAddress?: string;
+		subject: string;
+		messageId?: string;
+		headers?: Record<string, string | string[] | undefined>;
+	} | null> {
+		try {
+			await this.client.mailboxOpen(mailbox);
+			const status = await this.client.status(mailbox, { messages: true });
+			const total = status.messages || 0;
+			if (total === 0) return null;
+
+			const msg = await this.client.fetchOne(`${total}`, {
+				envelope: true,
+				headers: true,
+			});
+			if (!msg || !msg.envelope) return null;
+
+			const fromAddress = msg.envelope.from?.[0]?.address || "";
+			const toAddress = msg.envelope.to?.[0]?.address || "";
+			const subject = msg.envelope.subject || "";
+			const messageId = msg.envelope.messageId || "";
+
+			// Parse raw headers buffer into key-value map if present
+			const parsedHeaders: Record<string, string> = {};
+			if (msg.headers) {
+				const headerStr = msg.headers.toString("utf8");
+				const lines = headerStr.split(/\r?\n/);
+				let currentHeader = "";
+				for (const line of lines) {
+					if (/^\s/.test(line)) {
+						if (currentHeader) {
+							parsedHeaders[currentHeader] += " " + line.trim();
+						}
+					} else {
+						const colonIdx = line.indexOf(":");
+						if (colonIdx > 0) {
+							currentHeader = line.substring(0, colonIdx).trim().toLowerCase();
+							parsedHeaders[currentHeader] = line.substring(colonIdx + 1).trim();
+						}
+					}
+				}
+			}
+
+			return {
+				fromAddress,
+				toAddress,
+				subject,
+				messageId,
+				headers: parsedHeaders,
+			};
+		} catch (error: any) {
+			Logging.dev(`[fetchLatestMessageContext] Error: ${error?.message}`);
+			return null;
+		}
 	}
 
 	/**

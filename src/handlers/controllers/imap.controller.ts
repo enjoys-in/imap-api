@@ -7,6 +7,8 @@ import { imapEmailService } from "../services/ImapEmailService";
 import { imapMailboxService } from "../services/ImapMailboxService";
 import { imapSendService } from "../services/ImapSendService";
 import { imapStreamService } from "../services/ImapStreamService";
+import { vacationSenderService } from "../services/VacationSenderService";
+import { sendError, sendSuccess } from "../helpers/response.helper";
 
 /**
  * Controller facade for IMAP operations.
@@ -212,6 +214,53 @@ class ImapController {
 
 	async onFirstLoad(req: Request, res: Response) {
 		return imapDiagnosticsService.onFirstLoad(req, res);
+	}
+
+	// ── Automatic Replies / Vacation Responder ──
+
+	async getAutomaticReplies(req: Request, res: Response) {
+		try {
+			const userEmail = (
+				req.user?.email ||
+				req.query?.accountEmail ||
+				req.params?.accountId
+			) as string;
+			if (!userEmail) throw new Error("Account email or login required");
+			const settings = await vacationSenderService.getSettings(userEmail);
+			return sendSuccess(
+				res,
+				settings || {
+					account_email: userEmail,
+					is_enabled: false,
+					only_during_period: false,
+					time_zone: "UTC",
+					only_contacts: false,
+					reply_outside_org: true,
+					message_text: "",
+					rate_limit_days: 1,
+				},
+			);
+		} catch (error) {
+			return sendError(res, error);
+		}
+	}
+
+	async updateAutomaticReplies(req: Request, res: Response) {
+		try {
+			const userEmail = (
+				req.user?.email ||
+				req.body?.accountEmail ||
+				req.params?.accountId
+			) as string;
+			if (!userEmail) throw new Error("Account email or login required");
+			const updated = await vacationSenderService.updateSettings(
+				userEmail,
+				req.body,
+			);
+			return sendSuccess(res, updated, "Automatic replies updated");
+		} catch (error) {
+			return sendError(res, error);
+		}
 	}
 }
 
