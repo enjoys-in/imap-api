@@ -42,7 +42,7 @@ export class ImapDiagnosticsService {
 			const userEmail = req.user?.email as string;
 			if (!userEmail) throw new Error("Login required");
 
-			const cached = imapCache.getCapabilities(userEmail);
+			const cached = await imapCache.getCapabilities(userEmail);
 			if (cached) {
 				return sendSuccess(res, cached);
 			}
@@ -58,7 +58,7 @@ export class ImapDiagnosticsService {
 			}
 
 			const data = capMgr.toJSON();
-			imapCache.setCapabilities(userEmail, data, 3600);
+			await imapCache.setCapabilities(userEmail, data, 3600);
 
 			return sendSuccess(res, data);
 		} catch (error) {
@@ -140,7 +140,7 @@ export class ImapDiagnosticsService {
 
 			await service.capabilities.refresh();
 			const data = service.capabilities.toJSON();
-			imapCache.setCapabilities(userEmail, data, 3600);
+			await imapCache.setCapabilities(userEmail, data, 3600);
 
 			return sendSuccess(res, data, "Capabilities refreshed");
 		} catch (error) {

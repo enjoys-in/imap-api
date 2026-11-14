@@ -23,4 +23,6 @@ export interface SeparateCredentials {
 }
 export type ImapRequestBody = ImapConfig &
 	SmtpConfig &
-	(SharedCredentials | SeparateCredentials);
+	(SharedCredentials | SeparateCredentials) & {
+		display_name?: string;
+	};

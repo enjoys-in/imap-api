@@ -97,7 +97,7 @@ export class ImapAuthService {
 			);
 
 			// Cache folder list with 30s TTL
-			imapCache.setMailboxes(username, enrichedMailboxes, 30);
+			await imapCache.setMailboxes(username, enrichedMailboxes, 30);
 
 			return sendSuccess(res, userMailboxes, "Authenticated", {
 				user: {
@@ -180,7 +180,7 @@ export class ImapAuthService {
 			});
 
 			const enrichedMailboxes = enrichMailboxList(data, `acc-${isUser.id}`);
-			imapCache.setMailboxes(config.imap_username, enrichedMailboxes, 30);
+			await imapCache.setMailboxes(config.imap_username, enrichedMailboxes, 30);
 
 			return sendSuccess(res, data, "Authenticated", {
 				user: {
@@ -366,7 +366,7 @@ export class ImapAuthService {
 			let isUser = await imapBaseService.getUserEmail(config.imap_username);
 			const userMid = isUser?.id || 1;
 			const enrichedMailboxes = enrichMailboxList(rawMailboxes, `acc-${userMid}`);
-			imapCache.setMailboxes(config.imap_username, enrichedMailboxes, 30);
+			await imapCache.setMailboxes(config.imap_username, enrichedMailboxes, 30);
 
 			sendLog(
 				"mailbox_sync",
@@ -498,7 +498,7 @@ export class ImapAuthService {
 			const userEmail = req.user?.email as string;
 			if (userEmail) {
 				ImapFactory.removeInstance(userEmail);
-				imapCache.invalidateUser(userEmail);
+				await imapCache.invalidateUser(userEmail);
 			}
 
 			res.clearCookie("access_token");
@@ -523,13 +523,13 @@ export class ImapAuthService {
 			const accountId = userMid ? `acc-${userMid}` : "acc-1";
 
 			// Check TTL cache first (30s TTL)
-			let enrichedMailboxes = imapCache.getMailboxes(userEmail);
+			let enrichedMailboxes = await imapCache.getMailboxes(userEmail);
 
 			if (!enrichedMailboxes) {
 				const imapService = await getAuthenticatedImapService(userEmail);
 				const rawMailboxes = (await imapService.syncFolders()) || [];
 				enrichedMailboxes = enrichMailboxList(rawMailboxes, accountId);
-				imapCache.setMailboxes(userEmail, enrichedMailboxes, 30);
+				await imapCache.setMailboxes(userEmail, enrichedMailboxes, 30);
 			}
 
 			return sendSuccess(

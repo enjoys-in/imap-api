@@ -107,7 +107,7 @@ export class ImapEmailService {
 			const userEmail = req.user?.email as string;
 
 			// Check TTL cache first (10 min TTL)
-			const cached = imapCache.getEmailBody(userEmail, selectedMailbox, uid);
+			const cached = await imapCache.getEmailBody(userEmail, selectedMailbox, uid);
 			if (cached) {
 				return sendSuccess(res, cached, "OK", {
 					bodyHtml: cached.bodyHtml,
@@ -126,7 +126,7 @@ export class ImapEmailService {
 			const resultData = normalizeEmailBody(parsed);
 
 			// Cache normalized body
-			imapCache.setEmailBody(userEmail, selectedMailbox, uid, resultData, 600);
+			await imapCache.setEmailBody(userEmail, selectedMailbox, uid, resultData, 600);
 
 			return sendSuccess(res, resultData, "OK", {
 				bodyHtml: resultData.bodyHtml,
@@ -188,8 +188,8 @@ export class ImapEmailService {
 					mailbox: folder,
 				});
 
-				imapCache.invalidateMailboxes(userEmail);
-				imapCache.invalidateEmailBody(userEmail, folder);
+				await imapCache.invalidateMailboxes(userEmail);
+				await imapCache.invalidateEmailBody(userEmail, folder);
 
 				return sendAccepted(res, "Delete-all dispatched as background job", {
 					jobId: job.id,
@@ -200,8 +200,8 @@ export class ImapEmailService {
 			const uids = parseUids(req.body?.uids);
 			await imapService.deleteMessages(uids);
 
-			imapCache.invalidateMailboxes(userEmail);
-			imapCache.invalidateEmailBody(userEmail);
+			await imapCache.invalidateMailboxes(userEmail);
+			await imapCache.invalidateEmailBody(userEmail);
 
 			return sendSuccess(res, []);
 		} catch (error) {
@@ -240,7 +240,7 @@ export class ImapEmailService {
 						userEmail,
 						mailbox: folder,
 					});
-					imapCache.invalidateMailboxes(userEmail);
+					await imapCache.invalidateMailboxes(userEmail);
 					return sendAccepted(
 						res,
 						"Mark-all-read dispatched as background job",
@@ -253,7 +253,7 @@ export class ImapEmailService {
 						userEmail,
 						mailbox: folder,
 					});
-					imapCache.invalidateMailboxes(userEmail);
+					await imapCache.invalidateMailboxes(userEmail);
 					return sendAccepted(
 						res,
 						"Mark-all-unread dispatched as background job",
@@ -264,7 +264,7 @@ export class ImapEmailService {
 					throw new Error("Invalid Flag");
 			}
 
-			imapCache.invalidateMailboxes(userEmail);
+			await imapCache.invalidateMailboxes(userEmail);
 			return sendSuccess(res, []);
 		} catch (error) {
 			return sendError(res, error);
@@ -292,8 +292,8 @@ export class ImapEmailService {
 					fromMailbox: body.current,
 					toMailbox: body.target,
 				});
-				imapCache.invalidateMailboxes(userEmail);
-				imapCache.invalidateEmailBody(userEmail);
+				await imapCache.invalidateMailboxes(userEmail);
+				await imapCache.invalidateEmailBody(userEmail);
 
 				return sendAccepted(res, "Move-all dispatched as background job", {
 					jobId: job.id,
@@ -304,8 +304,8 @@ export class ImapEmailService {
 			const uids = parseUids(body.uids || body.uid);
 			await imapService.moveMessage(uids, body.current, body.target);
 
-			imapCache.invalidateMailboxes(userEmail);
-			imapCache.invalidateEmailBody(userEmail);
+			await imapCache.invalidateMailboxes(userEmail);
+			await imapCache.invalidateEmailBody(userEmail);
 
 			return sendSuccess(res, []);
 		} catch (error) {
@@ -330,7 +330,7 @@ export class ImapEmailService {
 			const uids = parseUids(body.uids || body.uid);
 			await imapService.copyMailToOtherMailbox(uids, body.target);
 
-			imapCache.invalidateMailboxes(userEmail);
+			await imapCache.invalidateMailboxes(userEmail);
 			return sendSuccess(res, []);
 		} catch (error) {
 			return sendError(res, error);
@@ -540,7 +540,7 @@ export class ImapEmailService {
 				flags,
 			);
 
-			imapCache.invalidateMailboxes(userEmail);
+			await imapCache.invalidateMailboxes(userEmail);
 			return sendSuccess(res, result);
 		} catch (error) {
 			return sendError(res, error);
@@ -570,7 +570,7 @@ export class ImapEmailService {
 					addFlags,
 					removeFlags,
 				});
-				imapCache.invalidateMailboxes(userEmail);
+				await imapCache.invalidateMailboxes(userEmail);
 				return sendAccepted(
 					res,
 					"Bulk flag update dispatched as background job",
@@ -585,7 +585,7 @@ export class ImapEmailService {
 				await imapService.removeCustomFlags(uids, removeFlags);
 			}
 
-			imapCache.invalidateMailboxes(userEmail);
+			await imapCache.invalidateMailboxes(userEmail);
 			return sendSuccess(res, []);
 		} catch (error) {
 			return sendError(res, error);

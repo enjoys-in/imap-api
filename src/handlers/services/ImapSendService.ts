@@ -104,7 +104,7 @@ export class ImapSendService {
 					if (info.messageId) {
 						Logging.dev(`Sent message append target: ${targetBox}`);
 					}
-					imapCache.invalidateMailboxes(userEmail);
+					await imapCache.invalidateMailboxes(userEmail);
 				}
 			} catch (appendErr) {
 				Logging.dev(`Could not append sent message: ${appendErr}`);

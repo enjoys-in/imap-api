@@ -40,8 +40,10 @@ const __config = {
 		SMTP_SENDER_NAME: process.env.SMTP_SENDER_NAME || "",
 	},
 	CACHE: {
+		CACHE_ENGINE: (process.env.CACHE_ENGINE || "memory").toLowerCase(),
 		CACHE_HOST: process.env.CACHE_HOST || "",
 		CACHE_PORT: Number(process.env.CACHE_PORT) || 6379,
+		ROCKSDB_PATH: process.env.ROCKSDB_PATH || "./data/rocksdb",
 	},
 };
 export const ConfigService = {

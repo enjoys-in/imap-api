@@ -5,3 +5,6 @@ build
 *.env
 *.logs
 *.log
+data/
+*.sst
+*.wal

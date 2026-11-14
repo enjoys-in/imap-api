@@ -22,12 +22,12 @@ export class ImapMailboxService {
 			const userMid = req.user?.uid || (req.user as any)?.mid;
 			const accountId = userMid ? `acc-${userMid}` : "acc-1";
 
-			let enrichedMailboxes = imapCache.getMailboxes(userEmail);
+			let enrichedMailboxes = await imapCache.getMailboxes(userEmail);
 			if (!enrichedMailboxes) {
 				const imapService = await getAuthenticatedImapService(userEmail);
 				const rawMailboxes = (await imapService.syncFolders()) || [];
 				enrichedMailboxes = enrichMailboxList(rawMailboxes, accountId);
-				imapCache.setMailboxes(userEmail, enrichedMailboxes, 30);
+				await imapCache.setMailboxes(userEmail, enrichedMailboxes, 30);
 			}
 
 			return sendSuccess(res, enrichedMailboxes, "OK", {
@@ -68,7 +68,7 @@ export class ImapMailboxService {
 			);
 
 			// Invalidate cache since folder state changed
-			imapCache.invalidateMailboxes(userEmail);
+			await imapCache.invalidateMailboxes(userEmail);
 
 			return sendSuccess(res, result);
 		} catch (error) {
@@ -85,7 +85,7 @@ export class ImapMailboxService {
 			const imapService = await getAuthenticatedImapService(userEmail);
 			const emails = await imapService.globalSync(userEmail);
 
-			imapCache.invalidateMailboxes(userEmail);
+			await imapCache.invalidateMailboxes(userEmail);
 
 			return sendSuccess(res, emails);
 		} catch (error) {
@@ -121,7 +121,7 @@ export class ImapMailboxService {
 			switch (type) {
 				case "create":
 					await imapService.createMailbox(body.mailbox);
-					imapCache.invalidateMailboxes(userEmail);
+					await imapCache.invalidateMailboxes(userEmail);
 					break;
 				case "rename":
 					if (!body.targetMailbox) {
@@ -131,11 +131,11 @@ export class ImapMailboxService {
 						body.mailbox,
 						body.targetMailbox,
 					);
-					imapCache.invalidateMailboxes(userEmail);
+					await imapCache.invalidateMailboxes(userEmail);
 					break;
 				case "delete":
 					result = await imapService.deleteMailbox(body.mailbox);
-					imapCache.invalidateMailboxes(userEmail);
+					await imapCache.invalidateMailboxes(userEmail);
 					break;
 				case "subscribe":
 					result = await imapService.subscribeMailbox(body.mailbox);
@@ -180,8 +180,8 @@ export class ImapMailboxService {
 			});
 
 			// Invalidate cached counts and message bodies
-			imapCache.invalidateMailboxes(userEmail);
-			imapCache.invalidateEmailBody(userEmail, targetMailbox);
+			await imapCache.invalidateMailboxes(userEmail);
+			await imapCache.invalidateEmailBody(userEmail, targetMailbox);
 
 			return sendAccepted(res, `Dispatched empty folder for ${targetMailbox}`, {
 				jobId: job.id,
@@ -206,7 +206,7 @@ export class ImapMailboxService {
 			);
 
 			// Check quota cache
-			let quotaResult = imapCache.getQuota(userEmail, mailbox);
+			let quotaResult = await imapCache.getQuota(userEmail, mailbox);
 			if (!quotaResult) {
 				try {
 					quotaResult = await imapService.getQuota(mailbox);
@@ -221,7 +221,7 @@ export class ImapMailboxService {
 					};
 				}
 
-				imapCache.setQuota(userEmail, mailbox, quotaResult, 60);
+				await imapCache.setQuota(userEmail, mailbox, quotaResult, 60);
 			}
 
 			return sendSuccess(res, quotaResult, "OK", { quota: quotaResult });
