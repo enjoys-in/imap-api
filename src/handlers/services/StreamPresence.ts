@@ -1,130 +1,73 @@
 import { watchConfig } from "./watchConfig";
 
-export type PresenceLevel = "active" | "background" | "idle" | "gone";
-
-export interface PresenceReport {
-	tabId: string;
-	visible: boolean;
-	folder: string | null;
-}
+export type PresenceLevel = "active" | "idle" | "gone";
 
 export interface PresenceSnapshot {
 	level: PresenceLevel;
-	visible: boolean;
-	openFolders: string[];
-	focusFolder: string | null;
 	lastSeen: number | null;
 	missedWindows: number;
 }
 
+export interface PresenceLease {
+	beat: (at?: number) => void;
+	close: (at?: number) => void;
+}
+
 type PresenceListener = (snapshot: PresenceSnapshot) => void;
 
-interface Tab {
+interface Lease {
 	seenAt: number;
-	visible: boolean;
-	folder: string | null;
-	streams: number;
 }
 
 const LEVEL_RANK: Record<PresenceLevel, number> = {
 	gone: 0,
 	idle: 1,
-	background: 2,
-	active: 3,
+	active: 2,
 };
 
 export const presenceRank = (level: PresenceLevel): number => LEVEL_RANK[level];
 
-const signature = (snapshot: PresenceSnapshot): string =>
-	[
-		snapshot.level,
-		snapshot.visible,
-		snapshot.focusFolder ?? "",
-		snapshot.openFolders.join("\n"),
-	].join("|");
-
 export class StreamPresence {
-	private readonly tabs = new Map<number, Map<string, Tab>>();
+	private readonly leases = new Map<number, Set<Lease>>();
 	private readonly listeners = new Map<number, Set<PresenceListener>>();
 
-	open(connectionId: number, tabId: string, at = Date.now()): () => void {
-		this.apply(connectionId, at, (tabs) => {
-			const tab = tabs.get(tabId);
-			if (tab) {
-				tab.seenAt = at;
-				tab.streams++;
-			} else {
-				tabs.set(tabId, { seenAt: at, visible: true, folder: null, streams: 1 });
-			}
+	open(connectionId: number, at = Date.now()): PresenceLease {
+		const lease: Lease = { seenAt: at };
+		this.apply(connectionId, at, (leases) => {
+			leases.add(lease);
 		});
 
 		let closed = false;
-		return () => {
-			if (closed) {
-				return;
-			}
-			closed = true;
-			this.apply(connectionId, Date.now(), (tabs) => {
-				const tab = tabs.get(tabId);
-				if (!tab) {
+		return {
+			beat: (beatAt = Date.now()) => {
+				if (closed) {
 					return;
 				}
-				tab.streams--;
-				if (tab.streams <= 0) {
-					tabs.delete(tabId);
-				}
-			});
-			if (this.tabs.get(connectionId)?.size === 0) {
-				this.tabs.delete(connectionId);
-			}
-		};
-	}
-
-	report(
-		connectionId: number,
-		report: PresenceReport,
-		at = Date.now(),
-	): PresenceSnapshot {
-		this.apply(connectionId, at, (tabs) => {
-			this.prune(tabs, at);
-			const tab = tabs.get(report.tabId);
-			if (tab) {
-				tab.seenAt = at;
-				tab.visible = report.visible;
-				tab.folder = report.folder;
-			} else {
-				tabs.set(report.tabId, {
-					seenAt: at,
-					visible: report.visible,
-					folder: report.folder,
-					streams: 0,
+				this.apply(connectionId, beatAt, () => {
+					lease.seenAt = beatAt;
 				});
-			}
-		});
-		return this.snapshot(connectionId, at);
+			},
+			close: (closeAt = Date.now()) => {
+				if (closed) {
+					return;
+				}
+				closed = true;
+				this.apply(connectionId, closeAt, (leases) => {
+					leases.delete(lease);
+				});
+				if (this.leases.get(connectionId)?.size === 0) {
+					this.leases.delete(connectionId);
+				}
+			},
+		};
 	}
 
 	snapshot(connectionId: number, at = Date.now()): PresenceSnapshot {
 		const { pingWindowMs, maxMissedWindows } = watchConfig();
-		const tabs = this.tabs.get(connectionId);
 
 		let lastSeen: number | null = null;
-		let visible = false;
-		let focus: { seenAt: number; folder: string } | null = null;
-		const open = new Set<string>();
-
-		for (const tab of tabs?.values() ?? []) {
-			lastSeen = lastSeen === null ? tab.seenAt : Math.max(lastSeen, tab.seenAt);
-			if (!tab.visible || at - tab.seenAt >= pingWindowMs) {
-				continue;
-			}
-			visible = true;
-			if (tab.folder) {
-				open.add(tab.folder);
-				if (!focus || tab.seenAt >= focus.seenAt) {
-					focus = { seenAt: tab.seenAt, folder: tab.folder };
-				}
-			}
+		for (const lease of this.leases.get(connectionId) ?? []) {
+			lastSeen = lastSeen === null ? lease.seenAt : Math.max(lastSeen, lease.seenAt);
 		}
 
 		const missedWindows =
@@ -138,17 +81,10 @@ export class StreamPresence {
 		} else if (missedWindows >= 1) {
 			level = "idle";
 		} else {
-			level = visible ? "active" : "background";
+			level = "active";
 		}
 
-		return {
-			level,
-			visible,
-			openFolders: [...open],
-			focusFolder: focus?.folder ?? null,
-			lastSeen,
-			missedWindows,
-		};
+		return { level, lastSeen, missedWindows };
 	}
 
 	subscribe(connectionId: number, listener: PresenceListener): () => void {
@@ -163,27 +99,17 @@ export class StreamPresence {
 		};
 	}
 
-	private prune(tabs: Map<string, Tab>, at: number) {
-		const { pingWindowMs, maxMissedWindows } = watchConfig();
-		const horizon = pingWindowMs * maxMissedWindows * 2;
-		for (const [id, tab] of tabs) {
-			if (tab.streams === 0 && at - tab.seenAt > horizon) {
-				tabs.delete(id);
-			}
-		}
-	}
-
 	private apply(
 		connectionId: number,
 		at: number,
-		change: (tabs: Map<string, Tab>) => void,
+		change: (leases: Set<Lease>) => void,
 	) {
-		const before = signature(this.snapshot(connectionId, at));
-		const tabs = this.tabs.get(connectionId) ?? new Map<string, Tab>();
-		this.tabs.set(connectionId, tabs);
-		change(tabs);
+		const before = this.snapshot(connectionId, at).level;
+		const leases = this.leases.get(connectionId) ?? new Set<Lease>();
+		this.leases.set(connectionId, leases);
+		change(leases);
 		const after = this.snapshot(connectionId, at);
-		if (before === signature(after)) {
+		if (before === after.level) {
 			return;
 		}
 		for (const listener of [...(this.listeners.get(connectionId) ?? [])]) {

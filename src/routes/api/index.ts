@@ -72,7 +72,6 @@ router.delete("/emails/:uid", ImapController.moveToTrash);
 router.post("/send-email", ImapController.sendEmail);
 router.get("/quota", ImapController.getQuota);
 router.get("/stream", ImapController.streamEvents);
-router.post("/stream/ping", ImapController.streamPing);
 
 // ── Web Push (background new-mail notifications) ──
 router.get("/push/public-key", ImapController.pushPublicKey);

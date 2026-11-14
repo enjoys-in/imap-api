@@ -165,10 +165,6 @@ class ImapController {
 		return imapStreamService.streamEvents(req, res);
 	}
 
-	async streamPing(req: Request, res: Response) {
-		return imapStreamService.ping(req, res);
-	}
-
 	// ── Web Push ──
 
 	async pushPublicKey(req: Request, res: Response) {

@@ -1,10 +1,7 @@
 import { Logging } from "@/logs";
 import type { Request, Response } from "express";
-import { randomUUID } from "node:crypto";
 import { ImapFactory } from "../factory/ImapFactory";
 import { formatImapError } from "../helpers/error.helper";
-import { requireIdentity } from "../helpers/mailbox.helper";
-import { sendError, sendSuccess } from "../helpers/response.helper";
 import { folderWatcher } from "./FolderWatcher";
 import { imapEventHub } from "./ImapEventHub";
 import { ImapStreamEvent } from "./ImapStreamEvent";
@@ -12,20 +9,11 @@ import { messageSyncService } from "./MessageSyncService";
 import { streamPresence } from "./StreamPresence";
 import { announceSync } from "./SyncAnnouncer";
 import { vacationSenderService } from "./VacationSenderService";
+import { watchConfig } from "./watchConfig";
 
 export { ImapStreamEvent };
 
 const SYNC_DEBOUNCE_MS = 60;
-const TAB_ID_PATTERN = /^[A-Za-z0-9_-]{8,64}$/;
-const MAX_FOLDER_PATH = 500;
-
-const readTabId = (value: unknown): string | null =>
-	typeof value === "string" && TAB_ID_PATTERN.test(value) ? value : null;
-
-const readFolder = (value: unknown): string | null =>
-	typeof value === "string" && value.length > 0 && value.length <= MAX_FOLDER_PATH
-		? value
-		: null;
 
 export class ImapStreamService {
 	/**
@@ -161,17 +149,19 @@ export class ImapStreamService {
 		const unsubscribeHub = imapEventHub.subscribe(userEmail, (event, data) =>
 			sendEvent(event, data),
 		);
-		const closePresence = streamPresence.open(
-			Number(userMid),
-			readTabId(req.query?.tab) ?? randomUUID(),
-		);
+		const presence = streamPresence.open(Number(userMid));
 		const releaseWatcher = folderWatcher.acquire(userEmail, Number(userMid));
 
-		const keepAlive = setInterval(() => {
-			if (!res.writableEnded) {
-				res.write(": keepalive\n\n");
+		const heartbeat = setInterval(() => {
+			if (res.writableEnded) {
+				return;
 			}
-		}, 25000);
+			res.write(": heartbeat\n\n", (error) => {
+				if (!error) {
+					presence.beat();
+				}
+			});
+		}, watchConfig().heartbeatMs);
 
 		let cleanedUp = false;
 		const cleanup = () => {
@@ -179,14 +169,14 @@ export class ImapStreamService {
 			cleanedUp = true;
 			closed = true;
 
-			clearInterval(keepAlive);
+			clearInterval(heartbeat);
 			for (const timer of timers.values()) {
 				clearTimeout(timer);
 			}
 			timers.clear();
 			unsubscribeHub();
 			releaseWatcher();
-			closePresence();
+			presence.close();
 
 			// Unbind all listeners from imapService to prevent memory leaks
 			imapService.offNewMessage(onNewMsg);
@@ -197,29 +187,6 @@ export class ImapStreamService {
 		req.on("close", cleanup);
 		res.on("close", cleanup);
 		res.on("finish", cleanup);
-	}
-
-	ping(req: Request, res: Response) {
-		try {
-			const { connectionId } = requireIdentity(req);
-			const body = (req.body ?? {}) as Record<string, unknown>;
-			const tabId = readTabId(body.tabId);
-			if (!tabId) {
-				throw new Error("A valid tabId is required");
-			}
-			const snapshot = streamPresence.report(connectionId, {
-				tabId,
-				visible: body.visible !== false,
-				folder: readFolder(body.folder),
-			});
-			const watching = folderWatcher.status(connectionId);
-			return sendSuccess(res, {
-				level: snapshot.level,
-				watching: watching !== null && !watching.suspended,
-			});
-		} catch (error) {
-			return sendError(res, error);
-		}
 	}
 }
 

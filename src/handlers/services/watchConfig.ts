@@ -3,6 +3,7 @@ export interface WatchConfig {
 	hotMs: number;
 	backgroundMs: number;
 	pingWindowMs: number;
+	heartbeatMs: number;
 	maxMissedWindows: number;
 }
 
@@ -10,6 +11,9 @@ const DEFAULT_SWEEP_MS = 10_000;
 const DEFAULT_HOT_MS = 2_000;
 const DEFAULT_BACKGROUND_MS = 30_000;
 const DEFAULT_PING_WINDOW_MS = 60_000;
+const DEFAULT_HEARTBEAT_MS = 20_000;
+const HEARTBEATS_PER_WINDOW = 3;
+const MIN_HEARTBEAT_MS = 250;
 const DEFAULT_MAX_MISSED = 3;
 const MIN_INTERVAL_MS = 1_000;
 
@@ -42,12 +46,20 @@ export function watchConfig(): WatchConfig {
 		DEFAULT_PING_WINDOW_MS,
 	);
 	const missed = readNumber("FOLDER_WATCH_MAX_MISSED");
+	const pingWindowMs = window === 0 ? DEFAULT_PING_WINDOW_MS : window;
 
 	return {
 		sweepMs,
 		hotMs: hotRaw === 0 ? 0 : Math.min(hotRaw, sweepMs || hotRaw),
 		backgroundMs: Math.max(backgroundRaw, sweepMs),
-		pingWindowMs: window === 0 ? DEFAULT_PING_WINDOW_MS : window,
+		pingWindowMs,
+		heartbeatMs: Math.max(
+			MIN_HEARTBEAT_MS,
+			Math.min(
+				DEFAULT_HEARTBEAT_MS,
+				Math.floor(pingWindowMs / HEARTBEATS_PER_WINDOW),
+			),
+		),
 		maxMissedWindows:
 			missed === null ? DEFAULT_MAX_MISSED : Math.max(1, Math.floor(missed)),
 	};

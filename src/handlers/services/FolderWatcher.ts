@@ -24,6 +24,7 @@ const MAX_BACKOFF_STEPS = 6;
 const SWEEP_SLACK = 0.9;
 const MIN_GRACE_MS = 1_000;
 const HOT_SPECIALS = new Set(["Inbox", "Drafts", "Sent"]);
+const INBOX = "INBOX";
 
 export function folderWatchInterval(): number {
 	return watchConfig().sweepMs;
@@ -49,7 +50,6 @@ interface Plan {
 	sweepEvery: number;
 	hotEvery: number;
 	goneInMs: number;
-	snapshot: PresenceSnapshot;
 }
 
 interface PathStatus {
@@ -112,19 +112,6 @@ export class FolderWatcher {
 		return this.watches.get(connectionId)?.subscribers ?? 0;
 	}
 
-	status(
-		connectionId: number,
-	): { level: PresenceLevel; suspended: boolean } | null {
-		const watch = this.watches.get(connectionId);
-		if (!watch) {
-			return null;
-		}
-		return {
-			level: this.plan(watch).level,
-			suspended: watch.timer === null && !watch.running,
-		};
-	}
-
 	private stop(watch: Watch) {
 		watch.stopped = true;
 		watch.unsubscribe();
@@ -146,7 +133,6 @@ export class FolderWatcher {
 				sweepEvery: 0,
 				hotEvery: 0,
 				goneInMs: 0,
-				snapshot,
 			};
 		}
 		const goneAt =
@@ -158,7 +144,6 @@ export class FolderWatcher {
 				sweepEvery: config.sweepMs,
 				hotEvery: config.hotMs,
 				goneInMs,
-				snapshot,
 			};
 		}
 		return {
@@ -166,7 +151,6 @@ export class FolderWatcher {
 			sweepEvery: config.backgroundMs,
 			hotEvery: 0,
 			goneInMs,
-			snapshot,
 		};
 	}
 
@@ -235,7 +219,7 @@ export class FolderWatcher {
 			if (sweep) {
 				watch.lastSweep = now;
 			}
-			await this.restoreFocus(watch, plan.snapshot);
+			await this.restoreFocus(watch);
 			watch.failures = 0;
 		} catch (error) {
 			if (watch.failures === 0) {
@@ -253,13 +237,11 @@ export class FolderWatcher {
 			imapEventHub.publish(watch.email, event, data);
 	}
 
-	private hotPaths(rows: MailboxEntity[], snapshot: PresenceSnapshot) {
-		const open = new Set(snapshot.openFolders);
+	private hotPaths(rows: MailboxEntity[]) {
 		return rows
 			.filter(
 				(row) =>
 					row.path === "INBOX" ||
-					open.has(row.path) ||
 					HOT_SPECIALS.has(
 						getFolderSpecial(row.name, row.special_use ?? undefined),
 					),
@@ -275,7 +257,7 @@ export class FolderWatcher {
 		if (!sweep) {
 			const rows = await mailboxStorageService.getMailboxes(connectionId);
 			watch.paths = new Set(rows.map((row) => row.path));
-			const wanted = this.hotPaths(rows, plan.snapshot);
+			const wanted = this.hotPaths(rows);
 			if (wanted.length === 0) {
 				return;
 			}
@@ -368,12 +350,8 @@ export class FolderWatcher {
 		}
 	}
 
-	private async restoreFocus(watch: Watch, snapshot: PresenceSnapshot) {
-		const wanted =
-			snapshot.focusFolder && watch.paths.has(snapshot.focusFolder)
-				? snapshot.focusFolder
-				: "INBOX";
-		if (!watch.paths.has(wanted) || watch.stopped) {
+	private async restoreFocus(watch: Watch) {
+		if (!watch.paths.has(INBOX) || watch.stopped) {
 			return;
 		}
 		try {
@@ -381,7 +359,7 @@ export class FolderWatcher {
 				watch.email,
 				watch.connectionId,
 			);
-			await imap.focus(wanted);
+			await imap.focus(INBOX);
 		} catch {
 			return;
 		}
