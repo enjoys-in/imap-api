@@ -1,38 +1,75 @@
+const INLINE_IMAGE_MAX_BYTES = 256 * 1024;
+const INLINE_TOTAL_MAX_BYTES = 1024 * 1024;
+
+export function escapeHtml(value: string): string {
+	return value
+		.replace(/&/g, "&amp;")
+		.replace(/</g, "&lt;")
+		.replace(/>/g, "&gt;")
+		.replace(/"/g, "&quot;")
+		.replace(/'/g, "&#39;");
+}
+
+const escapeRegExp = (value: string) =>
+	value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+
+const plainTextToHtml = (text: string) =>
+	`<pre style="font-family: inherit; white-space: pre-wrap;">${escapeHtml(text)}</pre>`;
+
+function inlineCidImages(html: string, mailAttachments: any[] | undefined) {
+	let total = 0;
+	let output = html;
+	for (const attachment of mailAttachments ?? []) {
+		const cid = String(attachment.cid || attachment.contentId || "").replace(
+			/^<|>$/g,
+			"",
+		);
+		const content = attachment.content;
+		if (
+			!cid ||
+			!/^image\//i.test(attachment.contentType || "") ||
+			!Buffer.isBuffer(content) ||
+			content.length > INLINE_IMAGE_MAX_BYTES ||
+			total + content.length > INLINE_TOTAL_MAX_BYTES
+		) {
+			continue;
+		}
+		total += content.length;
+		const dataUri = `data:${attachment.contentType};base64,${content.toString("base64")}`;
+		for (const variant of new Set([cid, encodeURIComponent(cid)])) {
+			output = output.replace(
+				new RegExp(`cid:${escapeRegExp(variant)}`, "gi"),
+				() => dataUri,
+			);
+		}
+	}
+	return output;
+}
+
 /**
  * Normalizes parsed MIME message bodies (from mailparser / simpleParser)
  * or raw fallback strings into clean bodyHtml, bodyText, and attachments list.
  */
-export function normalizeEmailBody(parsed: any): {
+export function normalizeEmailBody<A = unknown>(
+	parsed: any,
+	attachments: A[] = [],
+): {
 	bodyHtml: string;
 	bodyText: string;
-	attachments: any[];
+	attachments: A[];
 	raw?: string;
 } {
 	let bodyHtml = "";
 	let bodyText = "";
-	let attachments: any[] = [];
 
 	if (typeof parsed === "object" && parsed !== null) {
-		bodyHtml =
-			parsed.html ||
-			parsed.textAsHtml ||
-			(parsed.text
-				? `<pre style="font-family: inherit; white-space: pre-wrap;">${parsed.text}</pre>`
-				: "");
 		bodyText = parsed.text || "";
-
-		if (Array.isArray(parsed.attachments)) {
-			attachments = parsed.attachments.map((att: any, idx: number) => ({
-				id: att.cid || `att-${idx}`,
-				filename: att.filename || `attachment-${idx}`,
-				contentType: att.contentType || "application/octet-stream",
-				size: att.size || (att.content ? att.content.length : 0),
-				contentId: att.cid || null,
-			}));
-		}
+		bodyHtml = parsed.html
+			? inlineCidImages(parsed.html, parsed.attachments)
+			: parsed.textAsHtml || (bodyText ? plainTextToHtml(bodyText) : "");
 	} else if (typeof parsed === "string") {
 		bodyText = parsed;
-		bodyHtml = `<pre style="font-family: inherit; white-space: pre-wrap;">${parsed}</pre>`;
+		bodyHtml = plainTextToHtml(parsed);
 	}
 
 	return {

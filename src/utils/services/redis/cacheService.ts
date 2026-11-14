@@ -14,6 +14,11 @@ class CacheService {
 		});
 		this.publisher = this.cache.duplicate();
 		this.subscriber = this.cache.duplicate();
+		for (const client of [this.cache, this.publisher, this.subscriber]) {
+			client.on("error", (error: Error) =>
+				Logging.error(`Redis client error: ${error.message}`),
+			);
+		}
 		this.ConnectRedisClient();
 		this.connectPubSub();
 	}

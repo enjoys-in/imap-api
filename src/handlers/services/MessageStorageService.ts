@@ -1,5 +1,6 @@
 import { MessageEntity } from "@/factory/entities";
 import { InjectRepository } from "@/factory/typeorm";
+import type { AttachmentInfo } from "@/utils/interfaces/imap.interface";
 import { In } from "typeorm";
 
 export interface StoredMessageInput {
@@ -12,7 +13,7 @@ export interface StoredMessageInput {
 	size: number | null;
 	content_type: string | null;
 	flags: string[];
-	attachments: { filename: string; mimeType: string }[];
+	attachments: AttachmentInfo[];
 }
 
 const UPSERT_CHUNK = 500;

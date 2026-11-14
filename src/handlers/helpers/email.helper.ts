@@ -1,3 +1,5 @@
+import type { AttachmentInfo } from "@/utils/interfaces/imap.interface";
+import { toClientAttachment } from "./attachment.helper";
 import { getFolderSortRank, getFolderSpecial } from "./folder.helper";
 
 /**
@@ -31,7 +33,7 @@ export function parseEmailAddress(fromRaw?: string): {
  */
 export function enrichMailboxList(
 	mailboxes: any[] | null | undefined,
-	accountId = "acc-1",
+	accountId: string,
 ) {
 	return (mailboxes || []).map((box: any, index: number) => {
 		const special = getFolderSpecial(box.name, box.specialUse);
@@ -62,7 +64,7 @@ export function enrichMailboxList(
 export function enrichEmailList(
 	emails: any[],
 	selectedFolder: string,
-	accountId = "acc-1",
+	accountId: string,
 ) {
 	return (emails || []).map((msg: any) => {
 		const flagsArr = Array.isArray(msg.flags)
@@ -90,6 +92,12 @@ export function enrichEmailList(
 			? `msg-${uid}`
 			: msg.message_id || `msg-${Math.random().toString(36).substring(7)}`;
 
+		const attachments: ReturnType<typeof toClientAttachment>[] = (
+			Array.isArray(msg.attachments) ? msg.attachments : []
+		).map((attachment: AttachmentInfo) =>
+			toClientAttachment(attachment, selectedFolder, uid),
+		);
+
 		return {
 			...msg,
 			id,
@@ -102,22 +110,21 @@ export function enrichEmailList(
 			fromName: fromName || fromAddress,
 			fromAddress,
 			to: msg.to || "",
-			date: msg.date
-				? new Date(msg.date).toISOString()
-				: new Date().toISOString(),
+			date: msg.date ? new Date(msg.date).toISOString() : null,
 			size: msg.size || 0,
-			preview: msg.subject || "",
+			attachments,
 			isRead,
 			isFlagged,
-			isPinned: false,
 			isAnswered: flagsArr.includes("\\Answered"),
-			isForwarded: false,
+			isForwarded:
+				flagsArr.includes("$Forwarded") || flagsArr.includes("Forwarded"),
 			isDraft: flagsArr.includes("\\Draft"),
-			isThread: false,
-			threadCount: 1,
-			hasAttachments:
-				Array.isArray(msg.attachments) && msg.attachments.length > 0,
-			hasCalendar: false,
+			hasAttachments: attachments.some((attachment) => !attachment.isInline),
+			hasCalendar: attachments.some(
+				(attachment) =>
+					attachment.contentType === "text/calendar" ||
+					attachment.contentType === "application/ics",
+			),
 		};
 	});
 }

@@ -1,6 +1,7 @@
 import { Logging } from "@/logs";
 import type { Request, Response } from "express";
 import { imapCache } from "../cache/ImapCacheService";
+import { formatImapError } from "../helpers/error.helper";
 import { cleanBigIntJson, enrichMailboxList } from "../helpers/email.helper";
 import { resolveMailboxFolder } from "../helpers/folder.helper";
 import {
@@ -12,9 +13,11 @@ import { getAuthenticatedImapService } from "../helpers/session.helper";
 import { ImapJobProcessor } from "../jobs/ImapJobProcessor";
 import { ImapJobType } from "../jobs/types";
 import { mailboxStorageService } from "./MailboxStorageService";
+import { imapEventHub } from "./ImapEventHub";
+import { ImapStreamEvent } from "./ImapStreamService";
 import { messageSyncService } from "./MessageSyncService";
+import { quotaService } from "./QuotaService";
 
-const QUOTA_DB_FRESH_MS = 5 * 60 * 1000;
 
 export class ImapMailboxService {
 	/**
@@ -26,7 +29,10 @@ export class ImapMailboxService {
 		try {
 			const userEmail = req.user?.email as string;
 			const userMid = req.user?.uid || (req.user as any)?.mid;
-			const accountId = userMid ? `acc-${userMid}` : "acc-1";
+			if (!userMid) {
+				throw new Error("Login required");
+			}
+			const accountId = `acc-${userMid}`;
 			const forceSync =
 				req.query?.sync === "true" || req.query?.force === "true";
 
@@ -144,7 +150,12 @@ export class ImapMailboxService {
 		folders: any[],
 	) {
 		const messages: Record<string, unknown> = {};
-		for (const folder of folders) {
+		let added = 0;
+		imapEventHub.publish(userEmail, ImapStreamEvent.SYNC_START, {
+			folders: folders.length,
+		});
+
+		for (const [index, folder] of folders.entries()) {
 			if (!imapService.isSelectable(folder)) {
 				messages[folder.name] = {
 					info: folder,
@@ -156,58 +167,89 @@ export class ImapMailboxService {
 				};
 				continue;
 			}
-			const page = await messageSyncService.getPage(
+
+			const delta = await messageSyncService.syncMailbox(
 				imapService,
+				connectionId,
+				folder.path,
+			);
+			const emails = await messageSyncService.readStored(
 				connectionId,
 				folder.path,
 				0,
 				50,
 			);
+			added += delta.added.length;
 			messages[folder.name] = {
 				info: folder,
-				total_count: page.totalCount,
-				uidNext: page.uidNext,
-				unseen_count: folder.unseen_count,
-				emails: page.emails.reverse(),
-				hasMore: page.hasMore,
+				total_count: delta.totalCount,
+				uidNext: delta.uidNext,
+				unseen_count: delta.unseenCount,
+				emails: emails.reverse(),
+				hasMore: delta.totalCount > emails.length,
 			};
+			imapEventHub.publish(userEmail, ImapStreamEvent.SYNC_FOLDER, {
+				path: folder.path,
+				index: index + 1,
+				total: folders.length,
+				newCount: delta.added.length,
+				storedCount: delta.stored,
+				removedCount: delta.removed.length,
+				totalCount: delta.totalCount,
+				unreadCount: delta.unseenCount,
+			});
 		}
-		return { email: userEmail, mailboxList: folders, messages };
+
+		return {
+			payload: { email: userEmail, mailboxList: folders, messages },
+			added,
+		};
 	}
 
 	async syncCompleteMailbox(req: Request, res: Response) {
+		const userEmail = req.user?.email as string;
 		try {
-			const userEmail = req.user?.email as string;
 			const userMid = req.user?.uid || (req.user as any)?.mid;
+			if (!userMid) {
+				throw new Error("Login required");
+			}
+			const connectionId = Number(userMid);
 			const imapService = await getAuthenticatedImapService(userEmail, userMid);
 
-			// Synchronize all folders to database
-			const rawBoxes = (await imapService.syncFolders()) || [];
-			if (userMid) {
-				await mailboxStorageService.saveMailboxes(Number(userMid), rawBoxes);
-				try {
-					const quotaData = await imapService.getQuota("INBOX");
-					if (quotaData) {
-						await mailboxStorageService.saveQuota(
-							Number(userMid),
-							"INBOX",
-							quotaData,
-						);
-					}
-				} catch (err: any) {
-					Logging.dev(`Quota sync skipped: ${err?.message}`);
-				}
+			const folders = await imapService.listMailboxes();
+			await mailboxStorageService.saveMailboxes(connectionId, folders);
+			try {
+				await quotaService.refresh(imapService, userEmail, connectionId, "INBOX");
+			} catch (err: any) {
+				Logging.dev(`Quota sync skipped: ${err?.message}`);
 			}
 
-			const emails = userMid
-				? await this.syncAllFolders(imapService, userEmail, Number(userMid), rawBoxes)
-				: await imapService.globalSync(userEmail);
+			const { payload, added } = await this.syncAllFolders(
+				imapService,
+				userEmail,
+				connectionId,
+				folders,
+			);
 
 			await imapCache.invalidateMailboxes(userEmail);
-			await imapCache.invalidateQuota(userEmail);
 
-			return sendSuccess(res, emails);
+			imapEventHub.publish(userEmail, ImapStreamEvent.SYNC_COMPLETE, {
+				folders: folders.length,
+				newMessages: added,
+				mailboxes: mailboxStorageService.formatMailboxesForClient(
+					await mailboxStorageService.getMailboxes(connectionId),
+					`acc-${connectionId}`,
+				),
+				quota: await quotaService
+					.overview(() => Promise.resolve(imapService), userEmail, connectionId)
+					.catch(() => null),
+			});
+
+			return sendSuccess(res, payload);
 		} catch (error) {
+			imapEventHub.publish(userEmail, ImapStreamEvent.WARNING, {
+				message: formatImapError(error),
+			});
 			return sendError(res, error);
 		}
 	}
@@ -332,43 +374,15 @@ export class ImapMailboxService {
 				throw new Error("Login required");
 			}
 
-			// 1. Check in-memory/redis cache
-			let quotaResult = !forceSync
-				? await imapCache.getQuota(userEmail, mailbox)
-				: null;
+			const quota = await quotaService.getMailboxQuota(
+				() => getAuthenticatedImapService(userEmail, userMid),
+				userEmail,
+				Number(userMid),
+				mailbox,
+				forceSync,
+			);
 
-			// 2. Check PostgreSQL database (sub-millisecond instant response)
-			if (!quotaResult && !forceSync) {
-				const storedQuota = await mailboxStorageService.getQuota(
-					Number(userMid),
-					mailbox,
-				);
-				if (
-				storedQuota &&
-				Date.now() - storedQuota.updated_at.getTime() < QUOTA_DB_FRESH_MS
-			) {
-					quotaResult = mailboxStorageService.formatQuotaForClient(storedQuota);
-					await imapCache.setQuota(userEmail, mailbox, quotaResult, 120);
-				}
-			}
-
-			// 3. Fallback to live IMAP server when missing or force sync requested
-			if (!quotaResult) {
-				const imapService = await getAuthenticatedImapService(
-					userEmail,
-					userMid,
-				);
-				const liveQuota = await imapService.getQuota(mailbox);
-				const savedQuota = await mailboxStorageService.saveQuota(
-					Number(userMid),
-					mailbox,
-					liveQuota,
-				);
-				quotaResult = mailboxStorageService.formatQuotaForClient(savedQuota);
-				await imapCache.setQuota(userEmail, mailbox, quotaResult, 120);
-			}
-
-			return sendSuccess(res, quotaResult);
+			return sendSuccess(res, quota);
 		} catch (error) {
 			return sendError(res, error);
 		}

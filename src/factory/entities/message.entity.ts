@@ -8,6 +8,7 @@ import {
 	PrimaryGeneratedColumn,
 	UpdateDateColumn,
 } from "typeorm";
+import type { AttachmentInfo } from "@/utils/interfaces/imap.interface";
 import { MailboxEntity } from "./mailbox.entity";
 
 const numeric = {
@@ -57,7 +58,7 @@ export class MessageEntity {
 	flags!: string[];
 
 	@Column({ type: "jsonb", default: () => "'[]'" })
-	attachments!: { filename: string; mimeType: string }[];
+	attachments!: AttachmentInfo[];
 
 	@CreateDateColumn({ name: "created_at" })
 	created_at!: Date;

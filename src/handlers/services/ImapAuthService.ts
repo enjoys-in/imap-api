@@ -1,4 +1,5 @@
 import { __CONFIG__ } from "@/app/config";
+import { Logging } from "@/logs";
 import utils from "@/utils";
 import { MiscellaneousHelper } from "@/utils/helpers/misc";
 import { Security } from "@/utils/helpers/security";
@@ -17,8 +18,23 @@ import { sendError, sendSuccess } from "../helpers/response.helper";
 import { getAuthenticatedImapService } from "../helpers/session.helper";
 import imapBaseService from "./imapBaseService";
 import { mailboxStorageService } from "./MailboxStorageService";
+import { quotaService } from "./QuotaService";
 
 const securityService = new Security();
+const REDIS_GATE_TIMEOUT_MS = 1500;
+
+async function quotaOverviewSafe(email: string, connectionId: number) {
+  try {
+    return await quotaService.overview(
+      () => getAuthenticatedImapService(email, connectionId),
+      email,
+      connectionId,
+    );
+  } catch (error: any) {
+    Logging.dev(`Quota overview skipped: ${error?.message}`);
+    return null;
+  }
+}
 
 function safeDecryptPassword(rawPassword?: string): string {
   if (!rawPassword) return "";
@@ -50,7 +66,13 @@ export class ImapAuthService {
 
       // Check domain restriction if Redis is enabled
       try {
-        if (await Cache.cache.sIsMember(REDIS_KEY_NAME.ALL_DOMAINS, domain)) {
+        const restricted = await Promise.race([
+          Cache.cache.sIsMember(REDIS_KEY_NAME.ALL_DOMAINS, domain),
+          new Promise<boolean>((resolve) => {
+            setTimeout(() => resolve(false), REDIS_GATE_TIMEOUT_MS).unref();
+          }),
+        ]);
+        if (restricted) {
           throw new Error(
             "This Domain is not configured to use IMAP. Please Contact Admin",
           );
@@ -80,6 +102,8 @@ export class ImapAuthService {
 
       // Cache folder list with 30s TTL
       await imapCache.setMailboxes(username, enrichedMailboxes, 30);
+
+      const quota = await quotaOverviewSafe(username, isUser.id);
 
       const signJWT = utils.signJWT(
         {
@@ -112,6 +136,7 @@ export class ImapAuthService {
             role: AppRoles.USER,
           },
           mailboxes: enrichedMailboxes,
+          quota,
           token: signJWT,
         },
         "Authenticated",
@@ -178,6 +203,8 @@ export class ImapAuthService {
       const enrichedMailboxes = enrichMailboxList(data, `acc-${isUser.id}`);
       await imapCache.setMailboxes(config.imap_username, enrichedMailboxes, 30);
 
+      const quota = await quotaOverviewSafe(config.imap_username, isUser.id);
+
       const domain = MiscellaneousHelper.getOnlyDomainFromEmail(
         req.body.imap_username,
       );
@@ -214,6 +241,7 @@ export class ImapAuthService {
             role: AppRoles.USER,
           },
           mailboxes: enrichedMailboxes,
+          quota,
           token: signJWT,
         },
         "Authenticated",
@@ -401,14 +429,8 @@ export class ImapAuthService {
       );
 
       let rawMailboxes: Awaited<ReturnType<typeof imap.syncFolders>>;
-      let userMid: number | string;
-      let enrichedMailboxes: ReturnType<typeof enrichMailboxList>;
       try {
         rawMailboxes = await imap.syncFolders();
-        const isUser = await imapBaseService.getUserEmail(config.imap_username);
-        userMid = isUser?.id || 1;
-        enrichedMailboxes = enrichMailboxList(rawMailboxes, `acc-${userMid}`);
-        await imapCache.setMailboxes(config.imap_username, enrichedMailboxes, 30);
       } catch (syncErr: any) {
         sendLog(
           "mailbox_sync",
@@ -423,9 +445,8 @@ export class ImapAuthService {
       sendLog(
         "mailbox_sync",
         "success",
-        `Discovered ${enrichedMailboxes.length} mailbox folders (${enrichedMailboxes.map((f: any) => f.displayName).join(", ")})`,
+        `Discovered ${(rawMailboxes ?? []).length} mailbox folders (${(rawMailboxes ?? []).map((f) => f.name).join(", ")})`,
         80,
-        { mailboxes: enrichedMailboxes },
       );
 
       // ── Stage 4: First-time Email Cache Pre-Fetch ──
@@ -439,12 +460,7 @@ export class ImapAuthService {
       let initialCount = 0;
       try {
         const inboxData = await imap.selectMailbox("INBOX");
-        const enrichedEmails = enrichEmailList(
-          inboxData.emails || [],
-          "INBOX",
-          `acc-${userMid}`,
-        );
-        initialCount = enrichedEmails.length;
+        initialCount = inboxData.emails.length;
         sendLog(
           "email_fetch",
           "success",
@@ -487,6 +503,13 @@ export class ImapAuthService {
         );
       }
 
+      const enrichedMailboxes = enrichMailboxList(
+        rawMailboxes,
+        `acc-${existingUser.id}`,
+      );
+      await imapCache.setMailboxes(config.imap_username, enrichedMailboxes, 30);
+      const quota = await quotaOverviewSafe(config.imap_username, existingUser.id);
+
       const domain = MiscellaneousHelper.getOnlyDomainFromEmail(
         config.imap_username,
       );
@@ -518,6 +541,7 @@ export class ImapAuthService {
           },
           token: signJWT,
           mailboxes: enrichedMailboxes,
+          quota,
         },
       );
       res.end();
@@ -583,7 +607,15 @@ export class ImapAuthService {
       }
 
       const userMid = req.user?.uid || (req.user as any)?.mid;
-      const accountId = userMid ? `acc-${userMid}` : "acc-1";
+      if (!userMid) {
+        throw new Error("Login required");
+      }
+      const accountId = `acc-${userMid}`;
+
+      const cachedProfile = await imapCache.getProfile(userEmail);
+      if (cachedProfile) {
+        return sendSuccess(res, cachedProfile);
+      }
 
       // 1. Check in-memory/redis cache
       let enrichedMailboxes = await imapCache.getMailboxes(userEmail);
@@ -626,8 +658,10 @@ export class ImapAuthService {
         await imapCache.setMailboxes(userEmail, enrichedMailboxes, 60);
       }
 
-      const { iat, exp, iss, ...profile } = req.user as any;
-      return sendSuccess(res, { ...profile, mailboxes: enrichedMailboxes });
+      const { iat, exp, iss, ...claims } = req.user as any;
+      const profile = { ...claims, mailboxes: enrichedMailboxes };
+      await imapCache.setProfile(userEmail, profile, 60);
+      return sendSuccess(res, profile);
     } catch (error) {
       return sendError(res, error);
     }
@@ -663,7 +697,7 @@ export class ImapAuthService {
         smtpPort: user.smtp_port,
         smtpSecurity: user.smtp_secure ? "SslOnConnect" : "StartTls",
         isDefault: true,
-        requiresSignIn: false,
+        requiresSignIn: !user.imap_configured,
       };
 
       return sendSuccess(res, [account]);

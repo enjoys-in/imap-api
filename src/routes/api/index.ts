@@ -66,6 +66,7 @@ router.get("/folders", ImapController.loadMailboxes);
 router.post("/folders/:id/empty", ImapController.emptyFolder);
 router.get("/emails", ImapController.loadEmails);
 router.get("/emails/:uid/body", ImapController.loadEmailBody);
+router.get("/emails/:uid/attachments/:part", ImapController.downloadAttachment);
 router.delete("/emails", ImapController.moveToTrash);
 router.delete("/emails/:uid", ImapController.moveToTrash);
 router.post("/send-email", ImapController.sendEmail);

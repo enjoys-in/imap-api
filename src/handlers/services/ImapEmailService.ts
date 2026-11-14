@@ -1,5 +1,11 @@
 import type { Request, Response } from "express";
+import { pipeline } from "node:stream/promises";
 import { imapCache } from "../cache/ImapCacheService";
+import {
+	PART_ID_PATTERN,
+	contentDispositionAttachment,
+	toClientAttachment,
+} from "../helpers/attachment.helper";
 import {
 	cleanBigIntJson,
 	enrichEmailList,
@@ -53,19 +59,19 @@ export class ImapEmailService {
 			const imapService = await getAuthenticatedImapService(userEmail);
 
 			const userMid = req.user?.uid || (req.user as any)?.mid;
-			const mailboxPath = decodeURIComponent(selectedMailbox);
-			const emails = userMid
-				? await messageSyncService.getPage(
-						imapService,
-						Number(userMid),
-						mailboxPath,
-						offset,
-						limit,
-					)
-				: await imapService.selectMailbox(mailboxPath, offset, limit);
+			if (!userMid) {
+				throw new Error("Login required");
+			}
+			const emails = await messageSyncService.getPage(
+				imapService,
+				Number(userMid),
+				decodeURIComponent(selectedMailbox),
+				offset,
+				limit,
+			);
 			const cleanObject = cleanBigIntJson(emails);
 
-			const accountId = userMid ? `acc-${userMid}` : "acc-1";
+			const accountId = `acc-${userMid}`;
 			const enrichedEmails = enrichEmailList(
 				cleanObject.emails || [],
 				selectedMailbox,
@@ -101,6 +107,9 @@ export class ImapEmailService {
 			const uid = rawUid.startsWith("msg-")
 				? rawUid.replace("msg-", "")
 				: rawUid;
+			if (!/^\d+$/.test(uid)) {
+				throw new Error("A numeric uid is required");
+			}
 
 			const userEmail = req.user?.email as string;
 
@@ -115,13 +124,18 @@ export class ImapEmailService {
 			}
 
 			const imapService = await getAuthenticatedImapService(userEmail);
-			const parsed = await imapService.fetchMessageBody(
-				decodeURIComponent(selectedMailbox),
-				uid,
-				true,
+			const mailboxPath = decodeURIComponent(selectedMailbox);
+			const { summary, parsed } = await imapService.fetchMessage(
+				mailboxPath,
+				Number(uid),
 			);
 
-			const resultData = normalizeEmailBody(parsed);
+			const resultData = normalizeEmailBody(
+				parsed,
+				summary.attachments.map((attachment) =>
+					toClientAttachment(attachment, mailboxPath, uid),
+				),
+			);
 
 			// Cache normalized body
 			await imapCache.setEmailBody(
@@ -409,7 +423,10 @@ export class ImapEmailService {
 			);
 
 			const userMid = req.user?.uid || (req.user as any)?.mid;
-			const accountId = userMid ? `acc-${userMid}` : "acc-1";
+			if (!userMid) {
+				throw new Error("Login required");
+			}
+			const accountId = `acc-${userMid}`;
 			let enrichedEmails = enrichEmailList(
 				cleanBigIntJson(rawMessages),
 				selectedMailbox,
@@ -474,33 +491,50 @@ export class ImapEmailService {
 	async downloadAttachment(req: Request, res: Response) {
 		try {
 			const userEmail = req.user?.email as string;
-			const imapService = await getAuthenticatedImapService(userEmail);
-			const folder = (req.query?.folder as string) || "INBOX";
-			const uid = req.query?.uid as string;
-			const partId = req.query?.part as string;
-			if (!uid) throw new Error("uid is required");
-			if (!partId) throw new Error("part is required");
+			const userMid = req.user?.uid || (req.user as any)?.mid;
+			const folder = resolveMailboxFolder(
+				(req.query?.folder || req.query?.folderId) as string,
+			);
+			const uid = String(req.params?.uid ?? req.query?.uid ?? "").replace(
+				/^msg-/,
+				"",
+			);
+			const part = String(req.params?.part ?? req.query?.part ?? "");
+			if (!/^\d+$/.test(uid)) {
+				throw new Error("A numeric uid is required");
+			}
+			if (!PART_ID_PATTERN.test(part)) {
+				throw new Error("A valid attachment part is required");
+			}
 
-			const { meta, content } = await imapService.fetchMessageAttachments(
+			const imapService = await getAuthenticatedImapService(userEmail, userMid);
+			await imapService.downloadPart(
 				decodeURIComponent(folder),
 				uid,
-				partId,
+				part,
+				async (meta, content) => {
+					res.setHeader(
+						"Content-Type",
+						meta.contentType || "application/octet-stream",
+					);
+					res.setHeader(
+						"Content-Disposition",
+						contentDispositionAttachment(meta.filename || `attachment-${part}`),
+					);
+					res.setHeader("X-Content-Type-Options", "nosniff");
+					res.setHeader(
+						"Content-Security-Policy",
+						"sandbox; default-src 'none'",
+					);
+					res.setHeader("Cache-Control", "private, no-store");
+					await pipeline(content, res);
+				},
 			);
-
-			res.setHeader(
-				"Content-Type",
-				meta.contentType || "application/octet-stream",
-			);
-			if (meta.filename) {
-				res.setHeader(
-					"Content-Disposition",
-					`attachment; filename="${meta.filename}"`,
-				);
-			}
-			res.setHeader("Content-Length", content.length.toString());
-			res.send(content);
-			return;
 		} catch (error) {
+			if (res.headersSent) {
+				res.destroy();
+				return;
+			}
 			return sendError(res, error);
 		}
 	}

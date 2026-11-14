@@ -2,7 +2,10 @@ import { Logging } from "@/logs";
 import type { Request, Response } from "express";
 import { imapCache } from "../cache/ImapCacheService";
 import { ImapFactory } from "../factory/ImapFactory";
-import { mailboxStorageService } from "./MailboxStorageService";
+import { formatImapError } from "../helpers/error.helper";
+import { imapEventHub } from "./ImapEventHub";
+import { messageSyncService } from "./MessageSyncService";
+import { quotaService } from "./QuotaService";
 import { vacationSenderService } from "./VacationSenderService";
 
 export enum ImapStreamEvent {
@@ -11,7 +14,13 @@ export enum ImapStreamEvent {
 	MAILBOX_EXPUNGE = "mailbox:expunge",
 	MESSAGE_FLAGS = "message:flags",
 	WARNING = "warning",
+	SYNC_START = "sync:start",
+	SYNC_FOLDER = "sync:folder",
+	SYNC_COMPLETE = "sync:complete",
 }
+
+const SYNC_DEBOUNCE_MS = 300;
+const NEW_MESSAGE_PREVIEW_LIMIT = 5;
 
 export class ImapStreamService {
 	/**
@@ -45,24 +54,123 @@ export class ImapStreamService {
 			time: new Date().toISOString(),
 		});
 
-		if (!imapService) {
+		if (!imapService || !userMid) {
 			sendEvent(ImapStreamEvent.WARNING, {
-				message: "IMAP connection not yet initialized",
+				message: !imapService
+					? "IMAP connection not yet initialized"
+					: "Login required",
 			});
 			return;
 		}
 
-		const onNewMsg = (data: any) => {
-			sendEvent(ImapStreamEvent.MAILBOX_CHANGE, data);
+		let closed = false;
+		let queue: Promise<void> = Promise.resolve();
+		const timers = new Map<string, NodeJS.Timeout>();
+		const flagHints = new Map<string, Map<number, string[]>>();
 
-			// Update folder counts in database & invalidate memory cache
-			if (userMid) {
-				const folderPath = data?.path || "INBOX";
-				mailboxStorageService
-					.adjustMailboxCounts(Number(userMid), folderPath, 1, 1)
-					.catch(() => {});
-				imapCache.invalidateMailboxes(userEmail).catch(() => {});
+		const syncFolder = async (path: string) => {
+			const hints = flagHints.get(path);
+			flagHints.delete(path);
+
+			try {
+				const delta = await messageSyncService.syncMailbox(
+					imapService,
+					Number(userMid),
+					path,
+				);
+				await imapCache.invalidateMailboxes(userEmail);
+				for (const uid of delta.removed) {
+					await imapCache.invalidateEmailBody(userEmail, path, uid);
+				}
+
+				const changed = delta.added.length > 0 || delta.removed.length > 0;
+				const quota = changed
+					? await quotaService
+							.refresh(imapService, userEmail, Number(userMid), "INBOX")
+							.catch(() => null)
+					: null;
+
+				if (closed) {
+					return;
+				}
+
+				if (delta.added.length > 0) {
+					sendEvent(ImapStreamEvent.MAILBOX_CHANGE, {
+						path,
+						count: delta.totalCount,
+						prevCount: Math.max(0, delta.totalCount - delta.added.length),
+						newCount: delta.added.length,
+						totalCount: delta.totalCount,
+						unreadCount: delta.unseenCount,
+						messages: delta.added
+							.slice(-NEW_MESSAGE_PREVIEW_LIMIT)
+							.map((message) => ({
+								uid: message.uid,
+								from: message.from,
+								subject: message.subject,
+								date: message.date,
+							})),
+						quota,
+					});
+				}
+
+				if (delta.removed.length > 0) {
+					sendEvent(ImapStreamEvent.MAILBOX_EXPUNGE, {
+						path,
+						vanished: false,
+						removed: delta.removed,
+						totalCount: delta.totalCount,
+						unreadCount: delta.unseenCount,
+						quota,
+					});
+				}
+
+				const flagChanges = new Map(
+					delta.updated.map((change) => [change.uid, change.flags]),
+				);
+				for (const [uid, flags] of hints ?? []) {
+					if (!flagChanges.has(uid)) {
+						flagChanges.set(uid, flags);
+					}
+				}
+				for (const [uid, flags] of flagChanges) {
+					sendEvent(ImapStreamEvent.MESSAGE_FLAGS, {
+						path,
+						uid,
+						flags,
+						unreadCount: delta.unseenCount,
+						totalCount: delta.totalCount,
+					});
+				}
+			} catch (error) {
+				Logging.dev(
+					`[ImapStreamService] Sync of ${path} failed: ${formatImapError(error)}`,
+				);
+				sendEvent(ImapStreamEvent.WARNING, {
+					message: `Sync of ${path} failed: ${formatImapError(error)}`,
+				});
 			}
+		};
+
+		const scheduleSync = (path: string) => {
+			if (timers.has(path)) {
+				return;
+			}
+			timers.set(
+				path,
+				setTimeout(() => {
+					timers.delete(path);
+					queue = queue.then(() => (closed ? undefined : syncFolder(path)));
+				}, SYNC_DEBOUNCE_MS),
+			);
+		};
+
+		const onNewMsg = (data: {
+			path: string;
+			count: number;
+			prevCount: number;
+		}) => {
+			scheduleSync(data?.path || "INBOX");
 
 			// If new message arrived, check and trigger vacation auto-reply asynchronously
 			if (data && data.count > (data.prevCount ?? 0)) {
@@ -83,22 +191,29 @@ export class ImapStreamService {
 				});
 			}
 		};
-		const onExpunged = (data: any) => {
-			sendEvent(ImapStreamEvent.MAILBOX_EXPUNGE, data);
-			if (userMid) {
-				const folderPath = data?.path || "INBOX";
-				mailboxStorageService
-					.adjustMailboxCounts(Number(userMid), folderPath, -1, 0)
-					.catch(() => {});
-				imapCache.invalidateMailboxes(userEmail).catch(() => {});
-			}
+		const onExpunged = (data: { path: string }) => {
+			scheduleSync(data?.path || "INBOX");
 		};
-		const onFlags = (data: any) =>
-			sendEvent(ImapStreamEvent.MESSAGE_FLAGS, data);
+		const onFlags = (data: {
+			path: string;
+			uid?: number;
+			flags: Set<string>;
+		}) => {
+			const path = data?.path || "INBOX";
+			if (data?.uid !== undefined) {
+				const forPath = flagHints.get(path) ?? new Map<number, string[]>();
+				forPath.set(data.uid, Array.from(data.flags ?? []));
+				flagHints.set(path, forPath);
+			}
+			scheduleSync(path);
+		};
 
 		imapService.onNewMessage(onNewMsg);
 		imapService.onMessageExpunged(onExpunged);
 		imapService.onFlagsUpdated(onFlags);
+		const unsubscribeHub = imapEventHub.subscribe(userEmail, (event, data) =>
+			sendEvent(event, data),
+		);
 
 		const keepAlive = setInterval(() => {
 			if (!res.writableEnded) {
@@ -110,8 +225,14 @@ export class ImapStreamService {
 		const cleanup = () => {
 			if (cleanedUp) return;
 			cleanedUp = true;
+			closed = true;
 
 			clearInterval(keepAlive);
+			for (const timer of timers.values()) {
+				clearTimeout(timer);
+			}
+			timers.clear();
+			unsubscribeHub();
 
 			// Unbind all listeners from imapService to prevent memory leaks
 			imapService.offNewMessage(onNewMsg);

@@ -23,6 +23,10 @@ export class RedisCacheEngine implements ICacheEngine {
 	private isConnected = false;
 	private isConnecting = false;
 
+	get available(): boolean {
+		return this.isConnected && this.client.isOpen;
+	}
+
 	constructor(options: RedisCacheEngineOptions = {}) {
 		this.prefix = options.prefix ?? "imap:";
 		this.defaultTtlSeconds = options.defaultTtlSeconds ?? 300;
@@ -36,7 +40,9 @@ export class RedisCacheEngine implements ICacheEngine {
 			const url =
 				options.url ||
 				(rawHost.startsWith("redis://")
-					? rawHost
+					? new URL(rawHost).port
+						? rawHost
+						: `${rawHost}:${rawPort}`
 					: `redis://${rawHost}:${rawPort}`);
 
 			this.client = createClient({ url }) as RedisClientType;

@@ -26,3 +26,12 @@ export type ImapRequestBody = ImapConfig &
 	(SharedCredentials | SeparateCredentials) & {
 		display_name?: string;
 	};
+
+export interface AttachmentInfo {
+	part: string;
+	fileName: string;
+	contentType: string;
+	size: number;
+	contentId: string | null;
+	isInline: boolean;
+}

@@ -1,5 +1,8 @@
+import { __CONFIG__ } from "@/app/config";
 import { CacheEngineFactory, type CacheEngineType } from "./CacheEngineFactory";
+import type { RedisCacheEngine } from "./engines/RedisCacheEngine";
 import type { ICacheEngine } from "./interfaces/ICacheEngine";
+import { ProfileCache, type ProfilePrimary } from "./ProfileCache";
 
 /**
  * Domain-specific Cache Service for IMAP operations.
@@ -12,9 +15,18 @@ import type { ICacheEngine } from "./interfaces/ICacheEngine";
  */
 export class ImapCacheService {
   private engine: ICacheEngine;
+  private readonly profilePrimary: ProfilePrimary | null;
+  private profiles: ProfileCache;
 
-  constructor(engine?: ICacheEngine) {
+  constructor(engine?: ICacheEngine, profilePrimary?: ProfilePrimary | null) {
     this.engine = engine || CacheEngineFactory.create("rocksdb");
+    this.profilePrimary =
+      profilePrimary !== undefined
+        ? profilePrimary
+        : __CONFIG__.CACHE.CACHE_HOST
+          ? (CacheEngineFactory.create("redis") as RedisCacheEngine)
+          : null;
+    this.profiles = new ProfileCache(this.profilePrimary, this.engine);
   }
 
   /**
@@ -26,6 +38,7 @@ export class ImapCacheService {
     } else {
       this.engine = engineOrType;
     }
+    this.profiles = new ProfileCache(this.profilePrimary, this.engine);
   }
 
   /**
@@ -62,6 +75,23 @@ export class ImapCacheService {
 
   async invalidateMailboxes(email: string): Promise<void> {
     await this.engine.delete(`mailboxes:${email.toLowerCase()}`);
+    await this.invalidateProfile(email);
+  }
+
+  async getProfile<T = any>(email: string): Promise<T | undefined> {
+    return this.profiles.get<T>(email);
+  }
+
+  async setProfile(
+    email: string,
+    profile: unknown,
+    ttlSeconds = 60,
+  ): Promise<void> {
+    await this.profiles.set(email, profile, ttlSeconds);
+  }
+
+  async invalidateProfile(email: string): Promise<void> {
+    await this.profiles.invalidate(email);
   }
 
   // ── Email Bodies (Parsed MIME) ──

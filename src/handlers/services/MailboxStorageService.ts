@@ -61,12 +61,13 @@ export class MailboxStorageService {
 		}
 
 		const entities: Partial<MailboxEntity>[] = rawMailboxes.map((box) => {
-			const totalCount = Number(
-				box.total_count ?? box.status?.messages ?? box.messages ?? 0,
-			);
-			const unseenCount = Number(
-				box.unseen_count ?? box.status?.unseen ?? box.unseen ?? 0,
-			);
+			const totalCount =
+				box.total_count ?? box.status?.messages ?? box.messages;
+			const unseenCount =
+				box.unseen_count ?? box.status?.unseen ?? box.unseen;
+			const uidValidity =
+				box.status?.uidValidity ?? box.uidValidity ?? box.uid_validity;
+			const uidNext = box.status?.uidNext ?? box.uidNext ?? box.uid_next;
 			const modseq =
 				box.status?.highestModseq ?? box.highestModseq ?? box.highest_modseq;
 
@@ -78,15 +79,11 @@ export class MailboxStorageService {
 				special_use: box.specialUse || box.special_use || null,
 				listed: Boolean(box.listed),
 				subscribed: Boolean(box.subscribed),
-				total_count: totalCount,
-				unseen_count: unseenCount,
-				uid_validity:
-					box.status?.uidValidity ??
-					box.uidValidity ??
-					box.uid_validity ??
-					null,
-				uid_next: box.status?.uidNext ?? box.uidNext ?? box.uid_next ?? null,
-				highest_modseq: modseq ? String(modseq) : null,
+				...(totalCount !== undefined && { total_count: Number(totalCount) }),
+				...(unseenCount !== undefined && { unseen_count: Number(unseenCount) }),
+				...(uidValidity != null && { uid_validity: uidValidity }),
+				...(uidNext != null && { uid_next: uidNext }),
+				...(modseq && { highest_modseq: String(modseq) }),
 			};
 		});
 
@@ -148,29 +145,6 @@ export class MailboxStorageService {
 				updateData,
 			);
 		}
-	}
-
-	/**
-	 * Increments or decrements counts atomically (e.g. on IMAP IDLE exists/expunge events).
-	 */
-	async adjustMailboxCounts(
-		connectionId: number,
-		path: string,
-		totalDelta: number,
-		unseenDelta: number,
-	): Promise<void> {
-		await this.mailboxRepo
-			.createQueryBuilder()
-			.update(MailboxEntity)
-			.set({
-				total_count: () => `GREATEST(0, total_count + ${totalDelta})`,
-				unseen_count: () => `GREATEST(0, unseen_count + ${unseenDelta})`,
-			})
-			.where("connection_id = :connId AND path = :path", {
-				connId: connectionId,
-				path,
-			})
-			.execute();
 	}
 
 	/**
@@ -250,7 +224,7 @@ export class MailboxStorageService {
 	 */
 	formatMailboxesForClient(
 		entities: MailboxEntity[],
-		accountId = "acc-1",
+		accountId: string,
 	): any[] {
 		return entities.map((box, index) => {
 			const special = getFolderSpecial(box.name, box.special_use ?? undefined);

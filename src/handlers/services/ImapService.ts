@@ -1,5 +1,8 @@
 import { Logging } from "@/logs";
-import type { ImapConfig } from "@/utils/interfaces/imap.interface";
+import type {
+	AttachmentInfo,
+	ImapConfig,
+} from "@/utils/interfaces/imap.interface";
 import {
 	type FetchMessageObject,
 	type FetchQueryObject,
@@ -11,6 +14,7 @@ import {
 	type SearchObject,
 } from "imapflow";
 import { type ParsedMail, simpleParser } from "mailparser";
+import type { Readable } from "node:stream";
 import {
 	CapabilityManager,
 	CapabilityNotSupportedError,
@@ -23,31 +27,57 @@ const MESSAGE_QUERY: FetchQueryObject = {
 	flags: true,
 	bodyStructure: true,
 	size: true,
+	internalDate: true,
 };
 
 function collectAttachments(
 	structure: MessageStructureObject | undefined,
-	found: { filename: string; mimeType: string }[],
+	found: AttachmentInfo[],
 ) {
 	if (!structure) {
 		return;
 	}
-	if (structure.disposition === "attachment") {
-		found.push({
-			filename:
-				structure.dispositionParameters?.filename ||
-				structure.parameters?.name ||
-				"unnamed",
-			mimeType: structure.type,
-		});
+	const type = (structure.type || "").toLowerCase();
+	if (type.startsWith("multipart/")) {
+		for (const child of structure.childNodes ?? []) {
+			collectAttachments(child, found);
+		}
+		return;
 	}
-	for (const child of structure.childNodes ?? []) {
-		collectAttachments(child, found);
+
+	const disposition = structure.disposition;
+	const part = structure.part ?? "1";
+	const fileName =
+		structure.dispositionParameters?.filename || structure.parameters?.name;
+	const contentId = structure.id ? structure.id.replace(/^<|>$/g, "") : null;
+	const isBodyText =
+		(type === "text/plain" || type === "text/html") &&
+		!fileName &&
+		disposition !== "attachment";
+	if (isBodyText) {
+		return;
 	}
+
+	const encodedSize = structure.size ?? 0;
+	found.push({
+		part,
+		fileName: fileName || `attachment-${part}`,
+		contentType: type,
+		size:
+			structure.encoding === "base64"
+				? Math.floor((encodedSize * 3) / 4)
+				: encodedSize,
+		contentId,
+		isInline:
+			disposition !== "attachment" &&
+			(disposition === "inline" ||
+				Boolean(contentId) ||
+				type === "text/calendar"),
+	});
 }
 
 export function toEmailSummary(message: FetchMessageObject) {
-	const attachments: { filename: string; mimeType: string }[] = [];
+	const attachments: AttachmentInfo[] = [];
 	collectAttachments(message.bodyStructure, attachments);
 	return {
 		message_id: message.envelope?.messageId,
@@ -57,7 +87,7 @@ export function toEmailSummary(message: FetchMessageObject) {
 		subject: message.envelope?.subject,
 		from: message.envelope?.from?.map((f) => f.address).join(", "),
 		to: message.envelope?.to?.map((t) => t.address).join(", "),
-		date: message.envelope?.date,
+		date: message.envelope?.date ?? message.internalDate,
 		flags: message.flags,
 		attachments,
 	};
@@ -425,26 +455,41 @@ export class ImapService {
 		}
 		return messages;
 	}
-	async fetchMessageBody(mailbox: string, uid: string, is_parsed = false) {
-		await this.client.mailboxOpen(mailbox);
-		const source = await this.client.download(uid);
-
-		let mailchunks: any = null;
-
-		if (is_parsed) {
-			mailchunks = await simpleParser(source.content);
-		} else {
-			mailchunks = ""; // initialize as empty string
-			await new Promise((resolve, reject) => {
-				source.content.on("data", (chunk) => {
-					mailchunks += chunk.toString();
-				});
-				source.content.on("end", resolve);
-				source.content.on("error", reject);
+	async fetchMessage(mailbox: string, uid: number) {
+		const lock = await this.client.getMailboxLock(mailbox, {});
+		try {
+			const message = await this.client.fetchOne(String(uid), MESSAGE_QUERY, {
+				uid: true,
 			});
+			if (!message) {
+				throw new Error(`Message ${uid} was not found in ${mailbox}`);
+			}
+			const source = await this.client.download(String(uid), undefined, {
+				uid: true,
+			});
+			return {
+				summary: toEmailSummary(message),
+				parsed: await simpleParser(source.content),
+			};
+		} finally {
+			lock.release();
 		}
-
-		return mailchunks;
+	}
+	async fetchMessageBody(mailbox: string, uid: string, is_parsed = false) {
+		const lock = await this.client.getMailboxLock(mailbox, {});
+		try {
+			const source = await this.client.download(uid, undefined, { uid: true });
+			if (is_parsed) {
+				return await simpleParser(source.content);
+			}
+			let raw = "";
+			for await (const chunk of source.content) {
+				raw += chunk.toString();
+			}
+			return raw;
+		} finally {
+			lock.release();
+		}
 	}
 	async fetchMessageHeaders(
 		mailbox: string,
@@ -471,19 +516,27 @@ export class ImapService {
 	 * Download a specific attachment by its MIME part number.
 	 * The part number comes from `bodyStructure.part` in a fetch response.
 	 */
-	async fetchMessageAttachments(mailbox: string, uid: string, partId: string) {
-		await this.client.mailboxOpen(mailbox);
-		const download = await this.client.download(uid, partId, { uid: true });
-		const chunks: Buffer[] = [];
-		await new Promise<void>((resolve, reject) => {
-			download.content.on("data", (chunk: Buffer) => chunks.push(chunk));
-			download.content.on("end", resolve);
-			download.content.on("error", reject);
-		});
-		return {
-			meta: download.meta,
-			content: Buffer.concat(chunks),
-		};
+	async downloadPart(
+		mailbox: string,
+		uid: string,
+		part: string,
+		send: (
+			meta: { contentType?: string; filename?: string },
+			content: Readable,
+		) => Promise<void>,
+	) {
+		const lock = await this.client.getMailboxLock(mailbox, {});
+		try {
+			const { meta, content } = await this.client.download(uid, part, {
+				uid: true,
+			});
+			if (!content) {
+				throw new Error(`Attachment part ${part} was not found`);
+			}
+			await send(meta, content);
+		} finally {
+			lock.release();
+		}
 	}
 
 	/**
@@ -538,62 +591,10 @@ export class ImapService {
 	 * Fetch detailed enriched email message summaries for a list of UIDs.
 	 */
 	async fetchDetailedMessagesByUids(mailbox: string, uids: number[]) {
-		if (!uids || uids.length === 0) return [];
-		await this.client.mailboxOpen(mailbox);
-		const lock = await this.client.getMailboxLock(mailbox, {});
-		const emails: any[] = [];
-		try {
-			const checkForAttachments = (structure: any, attachments: any[]) => {
-				if (Array.isArray(structure)) {
-					for (const part of structure) {
-						checkForAttachments(part, attachments);
-					}
-				} else if (structure) {
-					if (
-						structure.disposition &&
-						structure.disposition.type?.toLowerCase() === "attachment"
-					) {
-						attachments.push({
-							filename:
-								structure.disposition?.params?.filename ||
-								structure.parameters?.name ||
-								"unnamed",
-							mimeType: `${structure.type}/${structure.subtype}`,
-						});
-					}
-				}
-			};
-
-			for await (const message of this.client.fetch(
-				uids,
-				{
-					envelope: true,
-					uid: true,
-					flags: true,
-					bodyStructure: true,
-				},
-				{ uid: true },
-			)) {
-				const attachments: any[] = [];
-				checkForAttachments(message.bodyStructure, attachments);
-
-				emails.push({
-					message_id: message?.envelope?.messageId,
-					uid: message.uid,
-					type: message.bodyStructure?.type,
-					size: message.bodyStructure?.size,
-					subject: message?.envelope?.subject,
-					from: message?.envelope?.from?.map((f: any) => f.address).join(", "),
-					to: message?.envelope?.to?.map((t: any) => t.address).join(", "),
-					date: message?.envelope?.date,
-					flags: message.flags,
-					attachments,
-				});
-			}
-		} finally {
-			lock.release();
+		if (!uids || uids.length === 0) {
+			return [];
 		}
-		return emails;
+		return this.withMailbox(mailbox, (box) => box.fetch(uids.join(","), true));
 	}
 
 	/**
