@@ -1,6 +1,12 @@
 import { DataSource } from "typeorm";
 import { PostgresQueryRunner } from "typeorm/driver/postgres/PostgresQueryRunner";
 import { __CONFIG__ } from ".";
+import {
+	AutomaticReplyEntity,
+	ImapUsersEmailConnectionEntity,
+	MailboxEntity,
+	MailboxQuotaEntity,
+} from "@/factory/entities";
 
 // Patch TypeORM PostgresQueryRunner to sequence concurrent queries on the same connection,
 // resolving pg@8.14+ / pg@9 DeprecationWarning: "Calling client.query() when the client is already executing a query"
@@ -39,7 +45,13 @@ export const AppDataSource = new DataSource({
 	type: "postgres",
 	synchronize: __CONFIG__.APP.APP_ENV === "DEV",
 	logging: false,
-	entities: ["build/factory/entities/**/*.entity.js"],
+	entities: [
+		AutomaticReplyEntity,
+		ImapUsersEmailConnectionEntity,
+		MailboxEntity,
+		MailboxQuotaEntity,
+		"build/factory/entities/**/*.entity.js",
+	],
 	subscribers: [],
 	migrationsRun: __CONFIG__.APP.APP_ENV === "DEV",
 	migrations: ["build/factory/migrations/**/*.js"],

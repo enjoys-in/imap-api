@@ -1,6 +1,8 @@
 import { Logging } from "@/logs";
 import type { Request, Response } from "express";
+import { imapCache } from "../cache/ImapCacheService";
 import { ImapFactory } from "../factory/ImapFactory";
+import { mailboxStorageService } from "./MailboxStorageService";
 import { vacationSenderService } from "./VacationSenderService";
 
 export enum ImapStreamEvent {
@@ -53,6 +55,15 @@ export class ImapStreamService {
 		const onNewMsg = (data: any) => {
 			sendEvent(ImapStreamEvent.MAILBOX_CHANGE, data);
 
+			// Update folder counts in database & invalidate memory cache
+			if (userMid) {
+				const folderPath = data?.path || "INBOX";
+				mailboxStorageService
+					.adjustMailboxCounts(Number(userMid), folderPath, 1, 1)
+					.catch(() => {});
+				imapCache.invalidateMailboxes(userEmail).catch(() => {});
+			}
+
 			// If new message arrived, check and trigger vacation auto-reply asynchronously
 			if (data && data.count > (data.prevCount ?? 0)) {
 				setImmediate(async () => {
@@ -72,8 +83,16 @@ export class ImapStreamService {
 				});
 			}
 		};
-		const onExpunged = (data: any) =>
+		const onExpunged = (data: any) => {
 			sendEvent(ImapStreamEvent.MAILBOX_EXPUNGE, data);
+			if (userMid) {
+				const folderPath = data?.path || "INBOX";
+				mailboxStorageService
+					.adjustMailboxCounts(Number(userMid), folderPath, -1, 0)
+					.catch(() => {});
+				imapCache.invalidateMailboxes(userEmail).catch(() => {});
+			}
+		};
 		const onFlags = (data: any) =>
 			sendEvent(ImapStreamEvent.MESSAGE_FLAGS, data);
 

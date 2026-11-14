@@ -15,6 +15,7 @@ import { enrichEmailList, enrichMailboxList } from "../helpers/email.helper";
 import { sendError, sendSuccess } from "../helpers/response.helper";
 import { getAuthenticatedImapService } from "../helpers/session.helper";
 import imapBaseService from "./imapBaseService";
+import { mailboxStorageService } from "./MailboxStorageService";
 
 const securityService = new Security();
 
@@ -129,7 +130,6 @@ export class ImapAuthService {
 
 		try {
 			const skipSMTP = req.query?.skipSMTP;
-			let isUser = await imapBaseService.getUserEmail(req.body.imap_username);
 
 			const user = req.body.uses_same_credentials
 				? req.body.imap_username
@@ -148,15 +148,26 @@ export class ImapAuthService {
 				smtp_username: user || req.body.imap_username,
 			};
 
+			// Evict any existing instance so new credentials take effect immediately
+			ImapFactory.removeInstance(config.imap_username);
+			await imapCache.invalidateUser(config.imap_username);
+
 			const { imap_configured, smtp_configured, data } =
 				await imapBaseService.setupUser(config, skipSMTP as string | undefined);
 
-			if (!isUser) {
-				isUser = await imapBaseService.insertIntoDb({
-					...config,
-					imap_configured,
-					smtp_configured,
-				});
+			// Upsert user in database (inserts new or updates existing record with new body credentials)
+			const isUser = await imapBaseService.upsertUser({
+				...config,
+				imap_configured,
+				smtp_configured,
+			});
+
+			if (isUser?.id) {
+				ImapFactory.getOrCreate(config.imap_username, config, isUser.id);
+			}
+
+			if (isUser?.id && data) {
+				await mailboxStorageService.saveMailboxes(isUser.id, data);
 			}
 
 			const domain = MiscellaneousHelper.getOnlyDomainFromEmail(
@@ -270,6 +281,10 @@ export class ImapAuthService {
 				res.end();
 				return;
 			}
+
+			// Evict any previous in-memory instance so new credentials take effect immediately
+			ImapFactory.removeInstance(config.imap_username);
+			await imapCache.invalidateUser(config.imap_username);
 
 			// ── Stage 1: Authenticate IMAP Connection ──
 			sendLog(
@@ -434,12 +449,19 @@ export class ImapAuthService {
 				95,
 			);
 
-			if (!isUser) {
-				isUser = await imapBaseService.insertIntoDb({
-					...config,
-					imap_configured: true,
-					smtp_configured: smtpConfigured,
-				});
+			// Upsert user in database (inserts new or updates existing record with new body credentials)
+			const isUser = await imapBaseService.upsertUser({
+				...config,
+				imap_configured: true,
+				smtp_configured: smtpConfigured,
+			});
+
+			if (isUser?.id) {
+				ImapFactory.getOrCreate(config.imap_username, config, isUser.id);
+			}
+
+			if (isUser?.id && rawMailboxes) {
+				await mailboxStorageService.saveMailboxes(isUser.id, rawMailboxes);
 			}
 
 			const domain = MiscellaneousHelper.getOnlyDomainFromEmail(
@@ -535,7 +557,8 @@ export class ImapAuthService {
 
 	/**
 	 * Returns user profile along with synchronized mailbox list.
-	 * Utilizes memory-safe TTL cache to minimize expensive IMAP LIST/STATUS roundtrips.
+	 * Cache-first strategy: checks memory/redis cache, then PostgreSQL database.
+	 * Only triggers an IMAP sync on initial account setup.
 	 */
 	async userProfile(req: Request, res: Response) {
 		try {
@@ -547,17 +570,45 @@ export class ImapAuthService {
 			const userMid = req.user?.uid || (req.user as any)?.mid;
 			const accountId = userMid ? `acc-${userMid}` : "acc-1";
 
-			// Check TTL cache first (30s TTL)
+			// 1. Check in-memory/redis cache
 			let enrichedMailboxes = await imapCache.getMailboxes(userEmail);
 
+			// 2. Check PostgreSQL database (instant sub-millisecond read)
+			if (!enrichedMailboxes && userMid) {
+				const stored = await mailboxStorageService.getMailboxes(
+					Number(userMid),
+				);
+				if (stored.length > 0) {
+					enrichedMailboxes = mailboxStorageService.formatMailboxesForClient(
+						stored,
+						accountId,
+					);
+					await imapCache.setMailboxes(userEmail, enrichedMailboxes, 60);
+				}
+			}
+
+			// 3. Fallback to live IMAP on first account load
 			if (!enrichedMailboxes) {
 				const imapService = await getAuthenticatedImapService(
 					userEmail,
 					userMid,
 				);
 				const rawMailboxes = (await imapService.syncFolders()) || [];
-				enrichedMailboxes = enrichMailboxList(rawMailboxes, accountId);
-				await imapCache.setMailboxes(userEmail, enrichedMailboxes, 30);
+
+				if (userMid) {
+					const saved = await mailboxStorageService.saveMailboxes(
+						Number(userMid),
+						rawMailboxes,
+					);
+					enrichedMailboxes = mailboxStorageService.formatMailboxesForClient(
+						saved,
+						accountId,
+					);
+				} else {
+					enrichedMailboxes = enrichMailboxList(rawMailboxes, accountId);
+				}
+
+				await imapCache.setMailboxes(userEmail, enrichedMailboxes, 60);
 			}
 
 			return sendSuccess(
