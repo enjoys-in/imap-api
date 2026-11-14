@@ -82,6 +82,7 @@ export function enrichEmailList(
 	emails: any[],
 	selectedFolder: string,
 	accountId: string,
+	folderId?: string,
 ) {
 	return (emails || []).map((msg: any) => {
 		const flagsArr = Array.isArray(msg.flags)
@@ -118,7 +119,9 @@ export function enrichEmailList(
 		return {
 			...msg,
 			id,
-			folderId: `fld-${selectedFolder.toLowerCase().replace(/[^a-z0-9]/g, "-")}`,
+			folderId:
+				folderId ??
+				`fld-${selectedFolder.toLowerCase().replace(/[^a-z0-9]/g, "-")}`,
 			accountId,
 			uid,
 			messageIdHeader: msg.message_id,
@@ -146,20 +149,14 @@ export function enrichEmailList(
 	});
 }
 
-/**
- * Parses numeric UID list from request body/query arrays.
- */
-export function parseUids(rawUids: any): number[] {
+export function parseUids(rawUids: unknown): number[] {
 	if (!rawUids) return [];
-	const arr = Array.isArray(rawUids) ? rawUids : [rawUids];
-	return arr
-		.map((uid) => {
-			if (typeof uid === "string" && uid.startsWith("msg-")) {
-				return Number(uid.replace("msg-", ""));
-			}
-			return Number(uid);
-		})
-		.filter((n) => !Number.isNaN(n) && n > 0);
+	const list: unknown[] = Array.isArray(rawUids) ? rawUids : [rawUids];
+	return list
+		.map((uid) =>
+			typeof uid === "string" ? Number(uid.replace(/^msg-/, "")) : Number(uid),
+		)
+		.filter((uid) => Number.isInteger(uid) && uid > 0);
 }
 
 /**

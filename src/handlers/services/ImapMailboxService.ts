@@ -1,9 +1,14 @@
 import { Logging } from "@/logs";
 import type { Request, Response } from "express";
 import { imapCache } from "../cache/ImapCacheService";
-import { formatImapError } from "../helpers/error.helper";
 import { cleanBigIntJson, enrichMailboxList } from "../helpers/email.helper";
-import { resolveMailboxFolder } from "../helpers/folder.helper";
+import { formatImapError } from "../helpers/error.helper";
+import {
+	readFolderParam,
+	requireFolderParam,
+	requireIdentity,
+	resolveMailbox,
+} from "../helpers/mailbox.helper";
 import {
 	sendAccepted,
 	sendError,
@@ -12,12 +17,11 @@ import {
 import { getAuthenticatedImapService } from "../helpers/session.helper";
 import { ImapJobProcessor } from "../jobs/ImapJobProcessor";
 import { ImapJobType } from "../jobs/types";
-import { mailboxStorageService } from "./MailboxStorageService";
 import { imapEventHub } from "./ImapEventHub";
 import { ImapStreamEvent } from "./ImapStreamService";
+import { mailboxStorageService } from "./MailboxStorageService";
 import { messageSyncService } from "./MessageSyncService";
 import { quotaService } from "./QuotaService";
-
 
 export class ImapMailboxService {
 	/**
@@ -219,7 +223,12 @@ export class ImapMailboxService {
 			const folders = await imapService.listMailboxes();
 			await mailboxStorageService.saveMailboxes(connectionId, folders);
 			try {
-				await quotaService.refresh(imapService, userEmail, connectionId, "INBOX");
+				await quotaService.refresh(
+					imapService,
+					userEmail,
+					connectionId,
+					"INBOX",
+				);
 			} catch (err: any) {
 				Logging.dev(`Quota sync skipped: ${err?.message}`);
 			}
@@ -320,34 +329,23 @@ export class ImapMailboxService {
 		}
 	}
 
-	/**
-	 * Purges/expunges all messages in the specified folder (Trash or Junk).
-	 * Dispatched as a non-blocking background job.
-	 */
 	async emptyFolder(req: Request, res: Response) {
 		try {
-			const userEmail = req.user?.email as string;
-			await getAuthenticatedImapService(userEmail);
-
-			const folderParam =
-				(req.params as any)?.id ||
-				req.query?.folder ||
-				(req.body as any)?.folder;
-			const targetMailbox = resolveMailboxFolder(folderParam);
+			const { email, connectionId } = requireIdentity(req);
+			await getAuthenticatedImapService(email, connectionId);
+			requireFolderParam(req);
+			const { path } = await resolveMailbox(connectionId, readFolderParam(req));
 
 			const job = ImapJobProcessor.dispatch(ImapJobType.DELETE_ALL_MESSAGES, {
-				userEmail,
-				mailbox: targetMailbox,
+				userEmail: email,
+				connectionId,
+				mailbox: path,
 			});
 
-			// Invalidate cached counts and message bodies
-			await imapCache.invalidateMailboxes(userEmail);
-			await imapCache.invalidateEmailBody(userEmail, targetMailbox);
-
-			return sendAccepted(res, `Dispatched empty folder for ${targetMailbox}`, {
+			return sendAccepted(res, `Dispatched empty folder for ${path}`, {
 				jobId: job.id,
 				status: job.status,
-				folder: targetMailbox,
+				folder: path,
 			});
 		} catch (error) {
 			return sendError(res, error);
@@ -361,23 +359,18 @@ export class ImapMailboxService {
 	 */
 	async getQuota(req: Request, res: Response) {
 		try {
-			const userEmail = req.user?.email as string;
-			const userMid = req.user?.uid || (req.user as any)?.mid;
+			const { email, connectionId } = requireIdentity(req);
 			const forceSync =
 				req.query?.sync === "true" || req.query?.force === "true";
-
-			const mailbox = resolveMailboxFolder(
-				(req.query?.mailbox || req.query?.folder || "INBOX") as string,
+			const { path: mailbox } = await resolveMailbox(
+				connectionId,
+				req.query?.mailbox ?? req.query?.folder,
 			);
 
-			if (!userMid) {
-				throw new Error("Login required");
-			}
-
 			const quota = await quotaService.getMailboxQuota(
-				() => getAuthenticatedImapService(userEmail, userMid),
-				userEmail,
-				Number(userMid),
+				() => getAuthenticatedImapService(email, connectionId),
+				email,
+				connectionId,
 				mailbox,
 				forceSync,
 			);

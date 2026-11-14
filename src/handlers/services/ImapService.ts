@@ -30,6 +30,8 @@ const MESSAGE_QUERY: FetchQueryObject = {
 	internalDate: true,
 };
 
+const UID_BATCH = 500;
+
 function collectAttachments(
 	structure: MessageStructureObject | undefined,
 	found: AttachmentInfo[],
@@ -629,22 +631,40 @@ export class ImapService {
 	/**
 	 * Set custom flags (keywords) on messages — e.g. $Starred, $Important.
 	 */
-	async setCustomFlags(uids: number[], flags: string[]) {
-		return this.client.messageFlagsAdd(uids, flags);
+	async setCustomFlags(uids: number[], flags: string[], mailbox = "INBOX") {
+		if (uids.length === 0) {
+			return true;
+		}
+		const done = await this.inMailbox(mailbox, (client) =>
+			client.messageFlagsAdd(uids.join(","), flags, { uid: true }),
+		);
+		return this.confirmed("add flags", mailbox, done);
 	}
 
 	/**
 	 * Remove custom flags (keywords) from messages.
 	 */
-	async removeCustomFlags(uids: number[], flags: string[]) {
-		return this.client.messageFlagsRemove(uids, flags);
+	async removeCustomFlags(uids: number[], flags: string[], mailbox = "INBOX") {
+		if (uids.length === 0) {
+			return true;
+		}
+		const done = await this.inMailbox(mailbox, (client) =>
+			client.messageFlagsRemove(uids.join(","), flags, { uid: true }),
+		);
+		return this.confirmed("remove flags", mailbox, done);
 	}
 
 	/**
 	 * Replace all flags on messages with the given set.
 	 */
-	async setFlags(uids: number[], flags: string[]) {
-		return this.client.messageFlagsSet(uids, flags);
+	async setFlags(uids: number[], flags: string[], mailbox = "INBOX") {
+		if (uids.length === 0) {
+			return true;
+		}
+		const done = await this.inMailbox(mailbox, (client) =>
+			client.messageFlagsSet(uids.join(","), flags, { uid: true }),
+		);
+		return this.confirmed("replace flags", mailbox, done);
 	}
 
 	/**
@@ -693,63 +713,137 @@ export class ImapService {
 		return this.client.mailbox;
 	}
 
+	private async inMailbox<T>(
+		path: string,
+		run: (client: ImapFlow) => Promise<T>,
+	): Promise<T> {
+		const lock = await this.client.getMailboxLock(path, {});
+		try {
+			return await run(this.client);
+		} finally {
+			lock.release();
+		}
+	}
+
+	private async requireFolder(path: string) {
+		const boxes = await this.client.list();
+		if (!boxes.some((box) => box.path === path)) {
+			throw new Error(`The folder "${path}" does not exist on the server`);
+		}
+	}
+
+	private confirmed<T>(action: string, mailbox: string, result: T | false): T {
+		if (result === false) {
+			throw new Error(
+				`The server rejected the request to ${action} in "${mailbox}"`,
+			);
+		}
+		return result;
+	}
+
+	private async uidsWhere(path: string, query: SearchObject): Promise<number[]> {
+		return this.inMailbox(path, async (client) => {
+			const found = await client.search(query, { uid: true });
+			return Array.isArray(found) ? found : [];
+		});
+	}
+
 	async deleteMessages(uids: number[], mailbox = "INBOX") {
-		await this.client.mailboxOpen(mailbox);
-		return this.client.messageDelete(uids);
+		if (uids.length === 0) {
+			return true;
+		}
+		const done = await this.inMailbox(mailbox, (client) =>
+			client.messageDelete(uids.join(","), { uid: true }),
+		);
+		return this.confirmed("delete messages", mailbox, done);
 	}
 	async deleteAllMessages(mailbox = "INBOX") {
-		await this.client.mailboxOpen(mailbox);
-		const uids = [];
-		for await (const msg of this.client.fetch("1:*", { uid: true })) {
-			uids.push(msg.uid);
+		const uids = await this.uidsWhere(mailbox, { all: true });
+		for (let i = 0; i < uids.length; i += UID_BATCH) {
+			await this.deleteMessages(uids.slice(i, i + UID_BATCH), mailbox);
 		}
-		if (uids.length) {
-			await this.client.messageDelete(uids);
-		}
+		return uids;
 	}
 	async moveMessage(
 		uid: number[],
 		currentMailbox: string,
 		targetMailbox: string,
 	) {
-		await this.client.mailboxOpen(currentMailbox);
-		await this.client.messageMove(uid, targetMailbox);
+		if (uid.length === 0) {
+			return true;
+		}
+		await this.requireFolder(targetMailbox);
+		const range = uid.join(",");
+		const moved = await this.inMailbox(currentMailbox, async (client) => {
+			if (client.capabilities.has("MOVE")) {
+				return client.messageMove(range, targetMailbox, { uid: true });
+			}
+			const copied = await client.messageCopy(range, targetMailbox, {
+				uid: true,
+			});
+			if (!copied) {
+				return false;
+			}
+			const removed = await client.messageDelete(range, { uid: true });
+			return removed ? copied : false;
+		});
+		return this.confirmed(
+			`move messages to "${targetMailbox}"`,
+			currentMailbox,
+			moved,
+		);
 	}
 
 	async moveAllMessages(currentMailbox: string, targetMailbox: string) {
-		await this.client.mailboxOpen(currentMailbox);
-		const uids = [];
-		for await (const msg of this.client.fetch("1:*", { uid: true })) {
-			uids.push(msg.uid);
+		const uids = await this.uidsWhere(currentMailbox, { all: true });
+		for (let i = 0; i < uids.length; i += UID_BATCH) {
+			await this.moveMessage(
+				uids.slice(i, i + UID_BATCH),
+				currentMailbox,
+				targetMailbox,
+			);
 		}
-		if (uids.length) {
-			await this.client.messageMove(uids, targetMailbox);
-		}
+		return uids;
 	}
-	async copyMailToOtherMailbox(uid: number[], destination: string) {
-		return this.client.messageCopy(uid, destination);
+	async copyMailToOtherMailbox(
+		uid: number[],
+		destination: string,
+		source = "INBOX",
+	) {
+		if (uid.length === 0) {
+			return true;
+		}
+		await this.requireFolder(destination);
+		const copied = await this.inMailbox(source, (client) =>
+			client.messageCopy(uid.join(","), destination, { uid: true }),
+		);
+		return this.confirmed(
+			`copy messages to "${destination}"`,
+			source,
+			copied,
+		);
 	}
 
-	async markAsRead(uid: number[]) {
-		return this.client.messageFlagsAdd(uid, ["\\Seen"]);
+	async markAsRead(uid: number[], mailbox = "INBOX") {
+		return this.setCustomFlags(uid, ["\\Seen"], mailbox);
 	}
-	async markAsUnread(uid: number[]) {
-		return this.client.messageFlagsRemove(uid, ["\\Seen"]);
+	async markAsUnread(uid: number[], mailbox = "INBOX") {
+		return this.removeCustomFlags(uid, ["\\Seen"], mailbox);
 	}
 	async markAllAsRead(mailbox: string) {
-		await this.client.mailboxOpen(mailbox); // Select mailbox
-		const uids = await this.client.search({ seen: false }); // Find unread
-		if (!Array.isArray(uids) || uids.length === 0)
-			return "No unread messages in this mailbox.";
-		return this.markAsRead(uids);
+		const unread = await this.uidsWhere(mailbox, { seen: false });
+		for (let i = 0; i < unread.length; i += UID_BATCH) {
+			await this.markAsRead(unread.slice(i, i + UID_BATCH), mailbox);
+		}
+		return unread;
 	}
 
 	async markAllAsUnread(mailbox: string) {
-		await this.client.mailboxOpen(mailbox); // Select mailbox
-		const uids = await this.client.search({ seen: true }); // Find read
-		if (!Array.isArray(uids) || uids.length === 0)
-			return "All messages are already unread.";
-		return this.markAsUnread(uids);
+		const read = await this.uidsWhere(mailbox, { seen: true });
+		for (let i = 0; i < read.length; i += UID_BATCH) {
+			await this.markAsUnread(read.slice(i, i + UID_BATCH), mailbox);
+		}
+		return read;
 	}
 	async createMailbox(mailbox: string) {
 		return this.client.mailboxCreate(mailbox);
@@ -816,15 +910,7 @@ export class ImapService {
 		currentMailbox: string,
 		targetMailbox: string,
 	) {
-		await this.client.mailboxOpen(currentMailbox);
-		if (this._capabilities.supports(ImapCapability.MOVE)) {
-			return this.client.messageMove(uid, targetMailbox);
-		}
-		// Fallback: COPY + mark \Deleted + EXPUNGE
-		await this.client.messageCopy(uid, targetMailbox);
-		await this.client.messageFlagsAdd(uid, ["\\Deleted"]);
-		// Note: ImapFlow doesn't expose raw EXPUNGE; messageDelete handles it
-		return true;
+		return this.moveMessage(uid, currentMailbox, targetMailbox);
 	}
 
 	// ----------- Event Registration & Cleanup -----------

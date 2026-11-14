@@ -121,11 +121,19 @@ export class MessageSyncService {
 		imap: ImapService,
 		connectionId: number,
 		path: string,
+		afterChange = false,
 	): Promise<SyncDelta> {
 		const key = `${connectionId}:${path}`;
 		const running = this.inFlight.get(key);
 		if (running) {
-			return running;
+			if (!afterChange) {
+				return running;
+			}
+			await running.catch(() => undefined);
+			const next = this.inFlight.get(key);
+			if (next) {
+				return next;
+			}
 		}
 		const task = this.runSync(imap, connectionId, path).finally(() => {
 			this.inFlight.delete(key);

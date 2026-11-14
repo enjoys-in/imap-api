@@ -27,38 +27,30 @@ export type ImapJobStatus = "queued" | "processing" | "completed" | "failed";
 /**
  * Payload shape for each job type.
  */
+interface UserJobScope {
+	userEmail: string;
+	connectionId?: number;
+}
+
+interface MailboxJobScope extends UserJobScope {
+	mailbox: string;
+}
+
 export interface ImapJobPayloads {
-	[ImapJobType.DELETE_MESSAGES]: {
-		userEmail: string;
+	[ImapJobType.DELETE_MESSAGES]: MailboxJobScope & {
 		uids: number[];
-		mailbox: string;
 	};
-	[ImapJobType.DELETE_ALL_MESSAGES]: {
-		userEmail: string;
-		mailbox: string;
-	};
-	[ImapJobType.MOVE_ALL_MESSAGES]: {
-		userEmail: string;
+	[ImapJobType.DELETE_ALL_MESSAGES]: MailboxJobScope;
+	[ImapJobType.MOVE_ALL_MESSAGES]: UserJobScope & {
 		fromMailbox: string;
 		toMailbox: string;
 	};
-	[ImapJobType.MARK_ALL_READ]: {
-		userEmail: string;
-		mailbox: string;
-	};
-	[ImapJobType.MARK_ALL_UNREAD]: {
-		userEmail: string;
-		mailbox: string;
-	};
-	[ImapJobType.GLOBAL_SYNC]: {
-		userEmail: string;
-	};
-	[ImapJobType.EXPUNGE_MAILBOX]: {
-		userEmail: string;
-		mailbox: string;
-	};
-	[ImapJobType.BULK_FLAG_UPDATE]: {
-		userEmail: string;
+	[ImapJobType.MARK_ALL_READ]: MailboxJobScope;
+	[ImapJobType.MARK_ALL_UNREAD]: MailboxJobScope;
+	[ImapJobType.GLOBAL_SYNC]: UserJobScope;
+	[ImapJobType.EXPUNGE_MAILBOX]: MailboxJobScope;
+	[ImapJobType.BULK_FLAG_UPDATE]: UserJobScope & {
+		mailbox?: string;
 		uids: number[];
 		addFlags?: string[];
 		removeFlags?: string[];

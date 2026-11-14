@@ -1,17 +1,21 @@
-import type { Request, Response } from "express";
 import { pipeline } from "node:stream/promises";
+import type { Request, Response } from "express";
 import { imapCache } from "../cache/ImapCacheService";
 import {
 	PART_ID_PATTERN,
 	contentDispositionAttachment,
 	toClientAttachment,
 } from "../helpers/attachment.helper";
+import { cleanBigIntJson, enrichEmailList } from "../helpers/email.helper";
 import {
-	cleanBigIntJson,
-	enrichEmailList,
-	parseUids,
-} from "../helpers/email.helper";
-import { resolveMailboxFolder } from "../helpers/folder.helper";
+	requireFolderParam,
+	requireIdentity,
+	resolveMailbox,
+	resolveMessageScope,
+	resolveTarget,
+	settleMutation,
+} from "../helpers/mailbox.helper";
+import { readText } from "../helpers/mailbox.resolver";
 import { normalizeEmailBody } from "../helpers/mime.helper";
 import {
 	sendAccepted,
@@ -22,60 +26,91 @@ import { parseSearchQueryString } from "../helpers/search.helper";
 import { getAuthenticatedImapService } from "../helpers/session.helper";
 import { ImapJobProcessor } from "../jobs/ImapJobProcessor";
 import { ImapJobType } from "../jobs/types";
+import type { ImapService } from "./ImapService";
 import { messageSyncService } from "./MessageSyncService";
 
+interface LoadEmailsQuery {
+	folder?: string;
+	folderId?: string;
+	page?: string;
+	offset?: string;
+	limit?: string;
+}
+
+interface TransferRequestBody {
+	target?: unknown;
+}
+
+interface AppendRequestBody {
+	mailbox?: unknown;
+	rawMessage?: string;
+	flags?: string[];
+}
+
+interface CustomFlagsRequestBody {
+	addFlags?: string[];
+	removeFlags?: string[];
+}
+
+type FlagAction = (
+	imap: ImapService,
+	uids: number[],
+	mailbox: string,
+) => Promise<unknown>;
+
+const BULK_FLAG_THRESHOLD = 100;
+
+const FLAGGED = ["\\Flagged"];
+
+const BULK_FLAG_JOBS: Record<string, ImapJobType | undefined> = {
+	mark_all_as_read: ImapJobType.MARK_ALL_READ,
+	mark_all_as_unread: ImapJobType.MARK_ALL_UNREAD,
+};
+
+const flagAdded: FlagAction = (imap, uids, mailbox) =>
+	imap.setCustomFlags(uids, FLAGGED, mailbox);
+
+const flagRemoved: FlagAction = (imap, uids, mailbox) =>
+	imap.removeCustomFlags(uids, FLAGGED, mailbox);
+
+const FLAG_ACTIONS: Record<string, FlagAction | undefined> = {
+	mark_as_read: (imap, uids, mailbox) => imap.markAsRead(uids, mailbox),
+	mark_as_unread: (imap, uids, mailbox) => imap.markAsUnread(uids, mailbox),
+	flag: flagAdded,
+	mark_as_flagged: flagAdded,
+	unflag: flagRemoved,
+	mark_as_unflagged: flagRemoved,
+};
+
 export class ImapEmailService {
-	/**
-	 * Loads paginated emails for a specified mailbox or folderId.
-	 */
-	async loadEmails(
-		req: Request<
-			{},
-			{},
-			{},
-			{
-				folder?: string;
-				folderId?: string;
-				page?: number;
-				offset?: number;
-				limit?: number;
-			}
-		>,
-		res: Response,
-	) {
+	async loadEmails(req: Request, res: Response) {
 		try {
-			const query = req.query;
+			const query = req.query as LoadEmailsQuery;
 			const limit = Math.max(1, Number(query.limit) || 50);
 			const page = Math.max(1, Number(query.page) || 1);
 			const offset =
 				query.offset !== undefined && !query.page
 					? Math.max(0, Number(query.offset) || 0)
 					: (page - 1) * limit;
-			const selectedMailbox = resolveMailboxFolder(
-				query.folder || query.folderId,
-			);
 
-			const userEmail = req.user?.email as string;
-			const imapService = await getAuthenticatedImapService(userEmail);
-
-			const userMid = req.user?.uid || (req.user as any)?.mid;
-			if (!userMid) {
-				throw new Error("Login required");
-			}
+			const { email, connectionId } = requireIdentity(req);
+			const [imapService, mailbox] = await Promise.all([
+				getAuthenticatedImapService(email, connectionId),
+				resolveMailbox(connectionId, query.folder ?? query.folderId),
+			]);
 			const emails = await messageSyncService.getPage(
 				imapService,
-				Number(userMid),
-				decodeURIComponent(selectedMailbox),
+				connectionId,
+				mailbox.path,
 				offset,
 				limit,
 			);
 			const cleanObject = cleanBigIntJson(emails);
-
-			const accountId = `acc-${userMid}`;
 			const enrichedEmails = enrichEmailList(
 				cleanObject.emails || [],
-				selectedMailbox,
-				accountId,
+				mailbox.path,
+				`acc-${connectionId}`,
+				mailbox.id ?? undefined,
 			);
 
 			return sendSuccess(res, {
@@ -87,64 +122,44 @@ export class ImapEmailService {
 		}
 	}
 
-	/**
-	 * Retrieves and parses full email MIME body with 10-minute TTL caching.
-	 * Caching parsed email bodies prevents repetitive IMAP socket streaming
-	 * and heavy CPU/memory parsing on every email view.
-	 */
 	async loadEmailBody(req: Request, res: Response) {
 		try {
-			const selectedMailbox = resolveMailboxFolder(
-				(req.query?.folder || (req.query as any)?.folderId) as string,
+			const { email, connectionId } = requireIdentity(req);
+			const mailbox = await resolveMailbox(
+				connectionId,
+				req.query?.folder ?? req.query?.folderId,
 			);
-			const rawUid = (req.params?.uid ||
-				req.query?.uid ||
-				req.query?.messageId) as string;
-
+			const rawUid = String(
+				req.params?.uid || req.query?.uid || req.query?.messageId || "",
+			);
 			if (!rawUid) {
 				throw new Error("UID or messageId is required");
 			}
-			const uid = rawUid.startsWith("msg-")
-				? rawUid.replace("msg-", "")
-				: rawUid;
+			const uid = rawUid.replace(/^msg-/, "");
 			if (!/^\d+$/.test(uid)) {
 				throw new Error("A numeric uid is required");
 			}
 
-			const userEmail = req.user?.email as string;
-
-			// Check TTL cache first (10 min TTL)
-			const cached = await imapCache.getEmailBody(
-				userEmail,
-				selectedMailbox,
-				uid,
-			);
+			const cached = await imapCache.getEmailBody(email, mailbox.path, uid);
 			if (cached) {
 				return sendSuccess(res, cached);
 			}
 
-			const imapService = await getAuthenticatedImapService(userEmail);
-			const mailboxPath = decodeURIComponent(selectedMailbox);
+			const imapService = await getAuthenticatedImapService(
+				email,
+				connectionId,
+			);
 			const { summary, parsed } = await imapService.fetchMessage(
-				mailboxPath,
+				mailbox.path,
 				Number(uid),
 			);
-
 			const resultData = normalizeEmailBody(
 				parsed,
 				summary.attachments.map((attachment) =>
-					toClientAttachment(attachment, mailboxPath, uid),
+					toClientAttachment(attachment, mailbox.path, uid),
 				),
 			);
-
-			// Cache normalized body
-			await imapCache.setEmailBody(
-				userEmail,
-				selectedMailbox,
-				uid,
-				resultData,
-				600,
-			);
+			await imapCache.setEmailBody(email, mailbox.path, uid, resultData, 600);
 
 			return sendSuccess(res, resultData);
 		} catch (error) {
@@ -186,166 +201,137 @@ export class ImapEmailService {
 		}
 	}
 
-	/**
-	 * Deletes emails from the IMAP server (inline for small batches, job for bulk).
-	 */
 	async moveToTrash(req: Request, res: Response) {
 		try {
-			const userEmail = req.user?.email as string;
-			const imapService = await getAuthenticatedImapService(userEmail);
+			const deleteAll = req.query?.all === "true";
+			const scope = await resolveMessageScope(req, {
+				requireUids: !deleteAll,
+			});
+			const source = { path: scope.mailbox.path, removed: scope.uids };
 
-			// Bulk delete-all → dispatch background job
-			if (req.query?.all === "true" && req.query?.folder) {
-				const folder = req.query.folder as string;
+			if (deleteAll) {
 				const job = ImapJobProcessor.dispatch(ImapJobType.DELETE_ALL_MESSAGES, {
-					userEmail,
-					mailbox: folder,
+					userEmail: scope.email,
+					connectionId: scope.connectionId,
+					mailbox: source.path,
 				});
-
-				await imapCache.invalidateMailboxes(userEmail);
-				await imapCache.invalidateEmailBody(userEmail, folder);
-
 				return sendAccepted(res, "Delete-all dispatched as background job", {
 					jobId: job.id,
 					status: job.status,
 				});
 			}
 
-			const uids = parseUids(req.body?.uids);
-			await imapService.deleteMessages(uids);
-
-			await imapCache.invalidateMailboxes(userEmail);
-			await imapCache.invalidateEmailBody(userEmail);
-
-			return sendSuccess(res, []);
+			await scope.imap.deleteMessages(scope.uids, source.path);
+			const result = await settleMutation(scope, {
+				reason: "delete",
+				source,
+				refreshQuota: true,
+			});
+			return sendSuccess(res, result);
 		} catch (error) {
 			return sendError(res, error);
 		}
 	}
 
-	/**
-	 * Handles marking messages as read, unread, flagged, or unflagged.
-	 */
 	async handleFlagsOnMessages(req: Request, res: Response) {
 		try {
-			const userEmail = req.user?.email as string;
-			const imapService = await getAuthenticatedImapService(userEmail);
-			const uids = parseUids(req.body?.uids);
-			const folder = (req.query?.folder as string) || undefined;
+			const action = String(req.query?.flag ?? "");
+			const bulkJob = BULK_FLAG_JOBS[action];
+			if (bulkJob) {
+				requireFolderParam(req);
+			}
+			const scope = await resolveMessageScope(req, {
+				requireUids: !bulkJob,
+			});
+			const { path } = scope.mailbox;
 
-			switch (req.query?.flag) {
-				case "mark_as_read":
-					await imapService.markAsRead(uids);
-					break;
-				case "mark_as_unread":
-					await imapService.markAsUnread(uids);
-					break;
-				case "flag":
-				case "mark_as_flagged":
-					await imapService.setCustomFlags(uids, ["\\Flagged"]);
-					break;
-				case "unflag":
-				case "mark_as_unflagged":
-					await imapService.removeCustomFlags(uids, ["\\Flagged"]);
-					break;
-				case "mark_all_as_read": {
-					if (!folder) throw new Error("Folder is required");
-					const job = ImapJobProcessor.dispatch(ImapJobType.MARK_ALL_READ, {
-						userEmail,
-						mailbox: folder,
-					});
-					await imapCache.invalidateMailboxes(userEmail);
-					return sendAccepted(
-						res,
-						"Mark-all-read dispatched as background job",
-						{ jobId: job.id, status: job.status },
-					);
-				}
-				case "mark_all_as_unread": {
-					if (!folder) throw new Error("Folder is required");
-					const job = ImapJobProcessor.dispatch(ImapJobType.MARK_ALL_UNREAD, {
-						userEmail,
-						mailbox: folder,
-					});
-					await imapCache.invalidateMailboxes(userEmail);
-					return sendAccepted(
-						res,
-						"Mark-all-unread dispatched as background job",
-						{ jobId: job.id, status: job.status },
-					);
-				}
-				default:
-					throw new Error("Invalid Flag");
+			if (bulkJob) {
+				const job = ImapJobProcessor.dispatch(bulkJob, {
+					userEmail: scope.email,
+					connectionId: scope.connectionId,
+					mailbox: path,
+				});
+				return sendAccepted(res, `${action} dispatched as background job`, {
+					jobId: job.id,
+					status: job.status,
+				});
 			}
 
-			await imapCache.invalidateMailboxes(userEmail);
-			return sendSuccess(res, []);
+			const apply = FLAG_ACTIONS[action];
+			if (!apply) {
+				throw new Error("Invalid Flag");
+			}
+			await apply(scope.imap, scope.uids, path);
+			const result = await settleMutation(scope, {
+				reason: "flags",
+				source: { path, flagged: scope.uids },
+			});
+			return sendSuccess(res, result);
 		} catch (error) {
 			return sendError(res, error);
 		}
 	}
 
-	/**
-	 * Moves emails from one folder to another.
-	 */
 	async moveToFolder(req: Request, res: Response) {
 		try {
-			const userEmail = req.user?.email as string;
-			const imapService = await getAuthenticatedImapService(userEmail);
-			const moveAll = (req.query?.move_all as string) || undefined;
-			const body = req.body as {
-				uid?: string[];
-				uids?: string[] | number[];
-				current: string;
-				target: string;
-			};
+			const moveAll = Boolean(req.query?.move_all);
+			const scope = await resolveMessageScope(req, { requireUids: !moveAll });
+			const target = await resolveTarget(
+				scope.connectionId,
+				(req.body as TransferRequestBody | undefined)?.target,
+			);
+			const source = scope.mailbox.path;
+			if (target.path === source) {
+				throw new Error("Source and target mailbox are the same");
+			}
 
-			if (moveAll && !body.uid && !body.uids) {
+			if (moveAll && scope.uids.length === 0) {
 				const job = ImapJobProcessor.dispatch(ImapJobType.MOVE_ALL_MESSAGES, {
-					userEmail,
-					fromMailbox: body.current,
-					toMailbox: body.target,
+					userEmail: scope.email,
+					connectionId: scope.connectionId,
+					fromMailbox: source,
+					toMailbox: target.path,
 				});
-				await imapCache.invalidateMailboxes(userEmail);
-				await imapCache.invalidateEmailBody(userEmail);
-
 				return sendAccepted(res, "Move-all dispatched as background job", {
 					jobId: job.id,
 					status: job.status,
 				});
 			}
 
-			const uids = parseUids(body.uids || body.uid);
-			await imapService.moveMessage(uids, body.current, body.target);
-
-			await imapCache.invalidateMailboxes(userEmail);
-			await imapCache.invalidateEmailBody(userEmail);
-
-			return sendSuccess(res, []);
+			await scope.imap.moveMessage(scope.uids, source, target.path);
+			const result = await settleMutation(scope, {
+				reason: "move",
+				source: { path: source, removed: scope.uids },
+				target: { path: target.path, count: scope.uids.length },
+			});
+			return sendSuccess(res, result);
 		} catch (error) {
 			return sendError(res, error);
 		}
 	}
 
-	/**
-	 * Copies emails from one folder to another.
-	 */
 	async copyToAnotherFolder(req: Request, res: Response) {
 		try {
-			const userEmail = req.user?.email as string;
-			const imapService = await getAuthenticatedImapService(userEmail);
-			const body = req.body as {
-				uid?: string[];
-				uids?: string[] | number[];
-				current?: string;
-				target: string;
-			};
+			const scope = await resolveMessageScope(req);
+			const target = await resolveTarget(
+				scope.connectionId,
+				(req.body as TransferRequestBody | undefined)?.target,
+			);
+			if (target.path === scope.mailbox.path) {
+				throw new Error("Source and target mailbox are the same");
+			}
 
-			const uids = parseUids(body.uids || body.uid);
-			await imapService.copyMailToOtherMailbox(uids, body.target);
-
-			await imapCache.invalidateMailboxes(userEmail);
-			return sendSuccess(res, []);
+			await scope.imap.copyMailToOtherMailbox(
+				scope.uids,
+				target.path,
+				scope.mailbox.path,
+			);
+			const result = await settleMutation(scope, {
+				reason: "copy",
+				target: { path: target.path, count: scope.uids.length },
+				refreshQuota: true,
+			});
+			return sendSuccess(res, result);
 		} catch (error) {
 			return sendError(res, error);
 		}
@@ -359,16 +345,18 @@ export class ImapEmailService {
 	 */
 	async searchEmails(req: Request, res: Response) {
 		try {
-			const userEmail = req.user?.email as string;
-			const imapService = await getAuthenticatedImapService(userEmail);
-
-			const folderParam =
-				req.body?.folder ||
-				req.query?.folder ||
-				(req.body as any)?.folderId ||
-				(req.query as any)?.folderId ||
-				"INBOX";
-			const selectedMailbox = resolveMailboxFolder(folderParam);
+			const { email, connectionId } = requireIdentity(req);
+			const imapService = await getAuthenticatedImapService(
+				email,
+				connectionId,
+			);
+			const mailbox = await resolveMailbox(
+				connectionId,
+				req.body?.folder ??
+					req.query?.folder ??
+					req.body?.folderId ??
+					req.query?.folderId,
+			);
 
 			const rawQuery =
 				req.body?.query !== undefined
@@ -403,7 +391,7 @@ export class ImapEmailService {
 
 			const limit = Number(req.query?.limit || req.body?.limit || 50);
 			const foundUids = await imapService.searchMessages(
-				decodeURIComponent(selectedMailbox),
+				mailbox.path,
 				imapSearchQuery,
 				true,
 			);
@@ -418,19 +406,15 @@ export class ImapEmailService {
 
 			// Fetch detailed message headers & attachment metadata for matching UIDs
 			const rawMessages = await imapService.fetchDetailedMessagesByUids(
-				decodeURIComponent(selectedMailbox),
+				mailbox.path,
 				targetUids,
 			);
 
-			const userMid = req.user?.uid || (req.user as any)?.mid;
-			if (!userMid) {
-				throw new Error("Login required");
-			}
-			const accountId = `acc-${userMid}`;
 			let enrichedEmails = enrichEmailList(
 				cleanBigIntJson(rawMessages),
-				selectedMailbox,
-				accountId,
+				mailbox.path,
+				`acc-${connectionId}`,
+				mailbox.id ?? undefined,
 			);
 
 			if (filterAttachment) {
@@ -463,9 +447,12 @@ export class ImapEmailService {
 	 */
 	async fetchHeaders(req: Request, res: Response) {
 		try {
-			const userEmail = req.user?.email as string;
-			const imapService = await getAuthenticatedImapService(userEmail);
-			const folder = (req.query?.folder as string) || "INBOX";
+			const { email, connectionId } = requireIdentity(req);
+			const imapService = await getAuthenticatedImapService(
+				email,
+				connectionId,
+			);
+			const mailbox = await resolveMailbox(connectionId, req.query?.folder);
 			const uid = req.query?.uid as string;
 			if (!uid) throw new Error("uid is required");
 
@@ -475,7 +462,7 @@ export class ImapEmailService {
 				: undefined;
 
 			const result = await imapService.fetchMessageHeaders(
-				decodeURIComponent(folder),
+				mailbox.path,
 				uid,
 				headerKeys,
 			);
@@ -490,10 +477,10 @@ export class ImapEmailService {
 	 */
 	async downloadAttachment(req: Request, res: Response) {
 		try {
-			const userEmail = req.user?.email as string;
-			const userMid = req.user?.uid || (req.user as any)?.mid;
-			const folder = resolveMailboxFolder(
-				(req.query?.folder || req.query?.folderId) as string,
+			const { email, connectionId } = requireIdentity(req);
+			const mailbox = await resolveMailbox(
+				connectionId,
+				req.query?.folder ?? req.query?.folderId,
 			);
 			const uid = String(req.params?.uid ?? req.query?.uid ?? "").replace(
 				/^msg-/,
@@ -507,9 +494,12 @@ export class ImapEmailService {
 				throw new Error("A valid attachment part is required");
 			}
 
-			const imapService = await getAuthenticatedImapService(userEmail, userMid);
+			const imapService = await getAuthenticatedImapService(
+				email,
+				connectionId,
+			);
 			await imapService.downloadPart(
-				decodeURIComponent(folder),
+				mailbox.path,
 				uid,
 				part,
 				async (meta, content) => {
@@ -539,60 +529,48 @@ export class ImapEmailService {
 		}
 	}
 
-	/**
-	 * Appends a raw message to a mailbox (e.g. Drafts or Sent).
-	 */
 	async appendMessage(req: Request, res: Response) {
 		try {
-			const userEmail = req.user?.email as string;
-			const imapService = await getAuthenticatedImapService(userEmail);
-			const { mailbox, rawMessage, flags } = req.body as {
-				mailbox: string;
-				rawMessage: string;
-				flags?: string[];
-			};
-
-			if (!mailbox || !rawMessage) {
+			const scope = await resolveMessageScope(req, { requireUids: false });
+			const { mailbox, rawMessage, flags } = (req.body ??
+				{}) as AppendRequestBody;
+			if (!readText(mailbox) || !rawMessage) {
 				throw new Error("mailbox and rawMessage are required");
 			}
+			const target = await resolveTarget(scope.connectionId, mailbox);
 
-			const result = await imapService.appendMessage(
-				mailbox,
+			const appended = await scope.imap.appendMessage(
+				target.path,
 				rawMessage,
 				flags,
 			);
-
-			await imapCache.invalidateMailboxes(userEmail);
-			return sendSuccess(res, result);
+			const mutation = await settleMutation(scope, {
+				reason: "append",
+				target: { path: target.path, count: 1 },
+				refreshQuota: true,
+			});
+			return sendSuccess(res, cleanBigIntJson({ ...appended, ...mutation }));
 		} catch (error) {
 			return sendError(res, error);
 		}
 	}
 
-	/**
-	 * Adds or removes custom flags/keywords on messages.
-	 */
 	async handleCustomFlags(req: Request, res: Response) {
 		try {
-			const userEmail = req.user?.email as string;
-			const imapService = await getAuthenticatedImapService(userEmail);
-			const { uids, addFlags, removeFlags } = req.body as {
-				uids: number[];
-				addFlags?: string[];
-				removeFlags?: string[];
-			};
+			const scope = await resolveMessageScope(req);
+			const { addFlags, removeFlags } = (req.body ??
+				{}) as CustomFlagsRequestBody;
+			const { path } = scope.mailbox;
 
-			if (!uids?.length) throw new Error("uids array is required");
-
-			// If many UIDs → background job
-			if (uids.length > 100) {
+			if (scope.uids.length > BULK_FLAG_THRESHOLD) {
 				const job = ImapJobProcessor.dispatch(ImapJobType.BULK_FLAG_UPDATE, {
-					userEmail,
-					uids,
+					userEmail: scope.email,
+					connectionId: scope.connectionId,
+					mailbox: path,
+					uids: scope.uids,
 					addFlags,
 					removeFlags,
 				});
-				await imapCache.invalidateMailboxes(userEmail);
 				return sendAccepted(
 					res,
 					"Bulk flag update dispatched as background job",
@@ -601,14 +579,16 @@ export class ImapEmailService {
 			}
 
 			if (addFlags?.length) {
-				await imapService.setCustomFlags(uids, addFlags);
+				await scope.imap.setCustomFlags(scope.uids, addFlags, path);
 			}
 			if (removeFlags?.length) {
-				await imapService.removeCustomFlags(uids, removeFlags);
+				await scope.imap.removeCustomFlags(scope.uids, removeFlags, path);
 			}
-
-			await imapCache.invalidateMailboxes(userEmail);
-			return sendSuccess(res, []);
+			const result = await settleMutation(scope, {
+				reason: "flags",
+				source: { path, flagged: scope.uids },
+			});
+			return sendSuccess(res, result);
 		} catch (error) {
 			return sendError(res, error);
 		}

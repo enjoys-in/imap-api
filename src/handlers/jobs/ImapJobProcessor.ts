@@ -4,6 +4,12 @@ import { AppEvents } from "@/utils/services/Events";
 import { getSocketIo } from "@/utils/services/sockets/Sockets";
 import { ImapFactory } from "../factory/ImapFactory";
 import { getAuthenticatedImapService } from "../helpers/session.helper";
+import type { ImapService } from "../services/ImapService";
+import {
+	type MutationChange,
+	type MutationResult,
+	messageMutationService,
+} from "../services/MessageMutationService";
 import { type ImapJob, type ImapJobPayloads, ImapJobType } from "./types";
 
 /** Socket.IO event name for job status updates */
@@ -145,68 +151,97 @@ export class ImapJobProcessor {
 
 		switch (type) {
 			case ImapJobType.DELETE_MESSAGES: {
-				const p =
-					payload as ImapJobPayloads[typeof ImapJobType.DELETE_MESSAGES];
-				const service = await ImapJobProcessor.getService(p.userEmail);
-				return service.deleteMessages(p.uids, p.mailbox);
+				const p = payload as ImapJobPayloads[ImapJobType.DELETE_MESSAGES];
+				const service = await ImapJobProcessor.getService(p);
+				await service.deleteMessages(p.uids, p.mailbox);
+				return ImapJobProcessor.settle(service, p, {
+					reason: "delete",
+					source: { path: p.mailbox, removed: p.uids },
+					refreshQuota: true,
+				});
 			}
 
 			case ImapJobType.DELETE_ALL_MESSAGES: {
-				const p =
-					payload as ImapJobPayloads[typeof ImapJobType.DELETE_ALL_MESSAGES];
-				const service = await ImapJobProcessor.getService(p.userEmail);
-				return service.deleteAllMessages(p.mailbox);
+				const p = payload as ImapJobPayloads[ImapJobType.DELETE_ALL_MESSAGES];
+				const service = await ImapJobProcessor.getService(p);
+				const removed = await service.deleteAllMessages(p.mailbox);
+				return ImapJobProcessor.settle(service, p, {
+					reason: "empty",
+					source: { path: p.mailbox, removed },
+					refreshQuota: true,
+				});
 			}
 
 			case ImapJobType.MOVE_ALL_MESSAGES: {
-				const p =
-					payload as ImapJobPayloads[typeof ImapJobType.MOVE_ALL_MESSAGES];
-				const service = await ImapJobProcessor.getService(p.userEmail);
-				return service.moveAllMessages(p.fromMailbox, p.toMailbox);
+				const p = payload as ImapJobPayloads[ImapJobType.MOVE_ALL_MESSAGES];
+				const service = await ImapJobProcessor.getService(p);
+				const moved = await service.moveAllMessages(p.fromMailbox, p.toMailbox);
+				return ImapJobProcessor.settle(service, p, {
+					reason: "move",
+					source: { path: p.fromMailbox, removed: moved },
+					target: { path: p.toMailbox, count: moved.length },
+				});
 			}
 
 			case ImapJobType.MARK_ALL_READ: {
-				const p = payload as ImapJobPayloads[typeof ImapJobType.MARK_ALL_READ];
-				const service = await ImapJobProcessor.getService(p.userEmail);
-				return service.markAllAsRead(p.mailbox);
+				const p = payload as ImapJobPayloads[ImapJobType.MARK_ALL_READ];
+				const service = await ImapJobProcessor.getService(p);
+				const flagged = await service.markAllAsRead(p.mailbox);
+				return ImapJobProcessor.settle(service, p, {
+					reason: "flags",
+					source: { path: p.mailbox, flagged },
+				});
 			}
 
 			case ImapJobType.MARK_ALL_UNREAD: {
-				const p =
-					payload as ImapJobPayloads[typeof ImapJobType.MARK_ALL_UNREAD];
-				const service = await ImapJobProcessor.getService(p.userEmail);
-				return service.markAllAsUnread(p.mailbox);
+				const p = payload as ImapJobPayloads[ImapJobType.MARK_ALL_UNREAD];
+				const service = await ImapJobProcessor.getService(p);
+				const flagged = await service.markAllAsUnread(p.mailbox);
+				return ImapJobProcessor.settle(service, p, {
+					reason: "flags",
+					source: { path: p.mailbox, flagged },
+				});
 			}
 
 			case ImapJobType.GLOBAL_SYNC: {
-				const p = payload as ImapJobPayloads[typeof ImapJobType.GLOBAL_SYNC];
-				const service = await ImapJobProcessor.getService(p.userEmail);
+				const p = payload as ImapJobPayloads[ImapJobType.GLOBAL_SYNC];
+				const service = await ImapJobProcessor.getService(p);
 				return service.globalSync(p.userEmail);
 			}
 
 			case ImapJobType.EXPUNGE_MAILBOX: {
-				const p =
-					payload as ImapJobPayloads[typeof ImapJobType.EXPUNGE_MAILBOX];
-				const service = await ImapJobProcessor.getService(p.userEmail);
-				// Delete messages already marked \Deleted
-				const uids = await service.searchMessages(p.mailbox, { deleted: true });
-				if (Array.isArray(uids) && uids.length > 0) {
+				const p = payload as ImapJobPayloads[ImapJobType.EXPUNGE_MAILBOX];
+				const service = await ImapJobProcessor.getService(p);
+				const found = await service.searchMessages(p.mailbox, {
+					deleted: true,
+				});
+				const uids = Array.isArray(found) ? found : [];
+				if (uids.length > 0) {
 					await service.deleteMessages(uids, p.mailbox);
 				}
-				return { expunged: Array.isArray(uids) ? uids.length : 0 };
+				const settled = await ImapJobProcessor.settle(service, p, {
+					reason: "delete",
+					source: { path: p.mailbox, removed: uids },
+					refreshQuota: true,
+				});
+				return { expunged: uids.length, ...settled };
 			}
 
 			case ImapJobType.BULK_FLAG_UPDATE: {
-				const p =
-					payload as ImapJobPayloads[typeof ImapJobType.BULK_FLAG_UPDATE];
-				const service = await ImapJobProcessor.getService(p.userEmail);
+				const p = payload as ImapJobPayloads[ImapJobType.BULK_FLAG_UPDATE];
+				const service = await ImapJobProcessor.getService(p);
+				const mailbox = p.mailbox ?? "INBOX";
 				if (p.addFlags?.length) {
-					await service.setCustomFlags(p.uids, p.addFlags);
+					await service.setCustomFlags(p.uids, p.addFlags, mailbox);
 				}
 				if (p.removeFlags?.length) {
-					await service.removeCustomFlags(p.uids, p.removeFlags);
+					await service.removeCustomFlags(p.uids, p.removeFlags, mailbox);
 				}
-				return { updated: p.uids.length };
+				const settled = await ImapJobProcessor.settle(service, p, {
+					reason: "flags",
+					source: { path: mailbox, flagged: p.uids },
+				});
+				return { updated: p.uids.length, ...settled };
 			}
 
 			default:
@@ -214,17 +249,38 @@ export class ImapJobProcessor {
 		}
 	}
 
-	/**
-	 * Retrieve the ImapService instance for a user. Throws if not found.
-	 */
-	private static async getService(userEmail: string) {
-		const service = await getAuthenticatedImapService(userEmail);
+	private static async getService(scope: {
+		userEmail: string;
+		connectionId?: number;
+	}) {
+		const service = await getAuthenticatedImapService(
+			scope.userEmail,
+			scope.connectionId,
+		);
 		if (!service) {
 			throw new Error(
-				`No active IMAP connection for "${userEmail}". User must be logged in.`,
+				`No active IMAP connection for "${scope.userEmail}". User must be logged in.`,
 			);
 		}
 		return service;
+	}
+
+	private static async settle(
+		imap: ImapService,
+		scope: { userEmail: string; connectionId?: number },
+		change: MutationChange,
+	): Promise<Partial<MutationResult>> {
+		if (!scope.connectionId) {
+			return {};
+		}
+		return messageMutationService.settle(
+			{
+				imap,
+				userEmail: scope.userEmail,
+				connectionId: scope.connectionId,
+			},
+			change,
+		);
 	}
 
 	/**

@@ -94,21 +94,7 @@ class ImapController {
 
 	// ── Email Query & Sync ──
 
-	async loadEmails(
-		req: Request<
-			{},
-			{},
-			{},
-			{
-				folder?: string;
-				folderId?: string;
-				page?: number;
-				offset?: number;
-				limit?: number;
-			}
-		>,
-		res: Response,
-	) {
+	async loadEmails(req: Request, res: Response) {
 		return imapEmailService.loadEmails(req, res);
 	}
 

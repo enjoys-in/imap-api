@@ -21,6 +21,7 @@ export enum ImapStreamEvent {
 
 const SYNC_DEBOUNCE_MS = 300;
 const NEW_MESSAGE_PREVIEW_LIMIT = 5;
+const EXPUNGE_EVENT_LIMIT = 50;
 
 export class ImapStreamService {
 	/**
@@ -115,14 +116,28 @@ export class ImapStreamService {
 				}
 
 				if (delta.removed.length > 0) {
-					sendEvent(ImapStreamEvent.MAILBOX_EXPUNGE, {
+					const totals = {
 						path,
 						vanished: false,
-						removed: delta.removed,
 						totalCount: delta.totalCount,
 						unreadCount: delta.unseenCount,
 						quota,
-					});
+					};
+					if (delta.removed.length <= EXPUNGE_EVENT_LIMIT) {
+						for (const uid of delta.removed) {
+							sendEvent(ImapStreamEvent.MAILBOX_EXPUNGE, {
+								...totals,
+								uid,
+								removed: delta.removed,
+							});
+						}
+					} else {
+						sendEvent(ImapStreamEvent.MAILBOX_EXPUNGE, {
+							...totals,
+							removed: [],
+							removedCount: delta.removed.length,
+						});
+					}
 				}
 
 				const flagChanges = new Map(
