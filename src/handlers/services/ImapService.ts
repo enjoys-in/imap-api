@@ -241,9 +241,9 @@ export class ImapService {
 			if (!this.isSelectable(mailbox)) {
 				emails[mailbox.name] = {
 					info: mailbox,
-					total_count: 0,
+					totalCount: 0,
 					uidNext: null,
-					unseen_count: 0,
+					unreadCount: 0,
 					emails: [],
 					hasMore: false,
 				};
@@ -254,9 +254,9 @@ export class ImapService {
 				data.totalCount > 0 ? await this.listUnseenOnly() : [];
 			emails[mailbox.name] = {
 				info: mailbox,
-				total_count: data.totalCount,
+				totalCount: data.totalCount,
 				uidNext: data.uidNext,
-				unseen_count: Array.isArray(searchResult) ? searchResult.length : 0,
+				unreadCount: Array.isArray(searchResult) ? searchResult.length : 0,
 				emails: data.emails.reverse(),
 				hasMore: data.hasMore,
 			};
@@ -328,12 +328,12 @@ export class ImapService {
 			path: emails.path,
 			name: mailbox,
 			delimiter: emails.delimiter,
-			flags: emails.flags,
+			flags: Array.from(emails.flags ?? []),
 			specialUse: emails.specialUse,
 			listed: emails.listed,
 			subscribed: emails.subscribed,
-			total_count: emails.exists,
-			unseen_count: Array.isArray(unseenCount) ? unseenCount.length : 0,
+			totalCount: emails.exists,
+			unreadCount: Array.isArray(unseenCount) ? unseenCount.length : 0,
 			uidNext: emails.uidNext,
 			uidValidity: Number(emails.uidValidity),
 			highestModseq: emails.highestModseq

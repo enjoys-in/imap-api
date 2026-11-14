@@ -121,8 +121,8 @@ export class ImapMailboxService {
 					Number(userMid),
 					decodedFolder,
 					{
-						total_count: result.total_count,
-						unseen_count: result.unseen_count,
+						total_count: result.totalCount,
+						unseen_count: result.unreadCount,
 						uid_next: result.uidNext,
 						uid_validity: result.uidValidity,
 						highest_modseq: result.highestModseq,
@@ -159,9 +159,9 @@ export class ImapMailboxService {
 			if (!imapService.isSelectable(folder)) {
 				messages[folder.name] = {
 					info: folder,
-					total_count: 0,
+					totalCount: 0,
 					uidNext: null,
-					unseen_count: 0,
+					unreadCount: 0,
 					emails: [],
 					hasMore: false,
 				};
@@ -182,9 +182,9 @@ export class ImapMailboxService {
 			added += delta.added.length;
 			messages[folder.name] = {
 				info: folder,
-				total_count: delta.totalCount,
+				totalCount: delta.totalCount,
 				uidNext: delta.uidNext,
-				unseen_count: delta.unseenCount,
+				unreadCount: delta.unseenCount,
 				emails: emails.reverse(),
 				hasMore: delta.totalCount > emails.length,
 			};

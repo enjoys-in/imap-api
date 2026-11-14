@@ -52,8 +52,8 @@ export class ImapFactory {
 			if (!service.isSelectable(mailbox)) {
 				emails[mailbox.name] = {
 					info: mailbox,
-					total_count: 0,
-					unseen_count: 0,
+					totalCount: 0,
+					unreadCount: 0,
 					emails: [],
 					hasMore: false,
 				};
@@ -64,8 +64,8 @@ export class ImapFactory {
 				data.totalCount > 0 ? await service.listUnseenOnly() : [];
 			emails[mailbox.name] = {
 				info: mailbox,
-				total_count: data.totalCount,
-				unseen_count: Array.isArray(searchResult) ? searchResult.length : 0,
+				totalCount: data.totalCount,
+				unreadCount: Array.isArray(searchResult) ? searchResult.length : 0,
 				emails: data.emails.reverse(),
 				hasMore: data.hasMore,
 			};

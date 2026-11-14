@@ -181,13 +181,13 @@ export class QuotaService {
 		const live = await imap.synceSingleFolder(mailbox);
 		await mailboxStorageService.ensureMailbox(connectionId, mailbox);
 		await mailboxStorageService.updateMailboxCounts(connectionId, mailbox, {
-			total_count: live.total_count,
-			unseen_count: live.unseen_count,
+			total_count: live.totalCount,
+			unseen_count: live.unreadCount,
 			uid_next: live.uidNext,
 			uid_validity: live.uidValidity,
 			...(live.highestModseq ? { highest_modseq: live.highestModseq } : {}),
 		});
-		return { unreadCount: live.unseen_count, totalCount: live.total_count };
+		return { unreadCount: live.unreadCount, totalCount: live.totalCount };
 	}
 
 	private async accountMessageCount(connectionId: number): Promise<number> {

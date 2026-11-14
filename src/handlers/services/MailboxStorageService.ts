@@ -1,6 +1,6 @@
 import { MailboxEntity, MailboxQuotaEntity } from "@/factory/entities";
 import { InjectRepository } from "@/factory/typeorm";
-import { getFolderSortRank, getFolderSpecial } from "../helpers/folder.helper";
+import { toClientMailbox } from "../helpers/email.helper";
 
 export class MailboxStorageService {
 	private get mailboxRepo() {
@@ -226,33 +226,7 @@ export class MailboxStorageService {
 		entities: MailboxEntity[],
 		accountId: string,
 	): any[] {
-		return entities.map((box, index) => {
-			const special = getFolderSpecial(box.name, box.special_use ?? undefined);
-			return {
-				id: `fld-${box.id}`,
-				numericId: box.id,
-				accountId,
-				name: box.name,
-				path: box.path,
-				fullName: box.path,
-				displayName: box.name,
-				delimiter: box.delimiter,
-				specialUse: box.special_use,
-				special,
-				listed: box.listed,
-				subscribed: box.subscribed,
-				parentFullName: null,
-				uidValidity: box.uid_validity ? Number(box.uid_validity) : null,
-				uidNext: box.uid_next,
-				highestModseq: box.highest_modseq,
-				unreadCount: box.unseen_count,
-				unseen_count: box.unseen_count,
-				totalCount: box.total_count,
-				total_count: box.total_count,
-				lastSyncedAt: box.updated_at.toISOString(),
-				sortRank: getFolderSortRank(special, index),
-			};
-		});
+		return entities.map((box, index) => toClientMailbox(box, accountId, index));
 	}
 
 	/**

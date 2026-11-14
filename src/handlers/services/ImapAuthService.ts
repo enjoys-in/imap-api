@@ -36,6 +36,19 @@ async function quotaOverviewSafe(email: string, connectionId: number) {
   }
 }
 
+async function clientMailboxes(
+  connectionId: number | undefined,
+  raw: any[] | null | undefined,
+) {
+  const accountId = `acc-${connectionId}`;
+  const stored = connectionId
+    ? await mailboxStorageService.getMailboxes(connectionId)
+    : [];
+  return stored.length > 0
+    ? mailboxStorageService.formatMailboxesForClient(stored, accountId)
+    : enrichMailboxList(raw, accountId);
+}
+
 function safeDecryptPassword(rawPassword?: string): string {
   if (!rawPassword) return "";
   try {
@@ -95,10 +108,7 @@ export class ImapAuthService {
       const config = imapBaseService.configDTO(isUser) as ImapRequestBody;
       const userMailboxes = await imapBaseService.loginUser(config, isUser.id);
 
-      const enrichedMailboxes = enrichMailboxList(
-        userMailboxes,
-        `acc-${isUser.id}`,
-      );
+      const enrichedMailboxes = await clientMailboxes(isUser.id, userMailboxes);
 
       // Cache folder list with 30s TTL
       await imapCache.setMailboxes(username, enrichedMailboxes, 30);
@@ -200,7 +210,7 @@ export class ImapAuthService {
         await mailboxStorageService.saveMailboxes(isUser.id, data);
       }
 
-      const enrichedMailboxes = enrichMailboxList(data, `acc-${isUser.id}`);
+      const enrichedMailboxes = await clientMailboxes(isUser?.id, data);
       await imapCache.setMailboxes(config.imap_username, enrichedMailboxes, 30);
 
       const quota = await quotaOverviewSafe(config.imap_username, isUser.id);
@@ -503,9 +513,9 @@ export class ImapAuthService {
         );
       }
 
-      const enrichedMailboxes = enrichMailboxList(
+      const enrichedMailboxes = await clientMailboxes(
+        existingUser.id,
         rawMailboxes,
-        `acc-${existingUser.id}`,
       );
       await imapCache.setMailboxes(config.imap_username, enrichedMailboxes, 30);
       const quota = await quotaOverviewSafe(config.imap_username, existingUser.id);

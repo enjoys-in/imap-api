@@ -29,33 +29,50 @@ export function parseEmailAddress(fromRaw?: string): {
 }
 
 /**
- * Enriches raw mailbox metadata from IMAP server into standard frontend schema.
+ * Maps a mailbox (DB row or raw IMAP listing) into the single camelCase
+ * folder schema every endpoint sends to the client.
  */
+export function toClientMailbox(box: any, accountId: string, index: number) {
+	const name: string = box.name || box.path || `folder-${index}`;
+	const path: string = box.path || name;
+	const specialUse = box.specialUse ?? box.special_use ?? null;
+	const special = getFolderSpecial(name, specialUse ?? undefined);
+	const uidValidity = box.uidValidity ?? box.uid_validity;
+	const syncedAt = box.updated_at ?? box.lastSyncedAt ?? new Date();
+
+	return {
+		id: box.id
+			? `fld-${box.id}`
+			: `fld-${name.toLowerCase().replace(/[^a-z0-9]/g, "-")}`,
+		numericId: box.id ?? null,
+		accountId,
+		name,
+		path,
+		fullName: path,
+		displayName: name,
+		delimiter: box.delimiter ?? null,
+		specialUse,
+		special,
+		listed: box.listed ?? null,
+		subscribed: box.subscribed ?? null,
+		parentFullName: null,
+		uidValidity: uidValidity ? Number(uidValidity) : null,
+		uidNext: box.uidNext ?? box.uid_next ?? null,
+		highestModseq: box.highestModseq ?? box.highest_modseq ?? null,
+		unreadCount: Number(box.unreadCount ?? box.unseen_count ?? 0),
+		totalCount: Number(box.totalCount ?? box.total_count ?? 0),
+		lastSyncedAt: new Date(syncedAt).toISOString(),
+		sortRank: getFolderSortRank(special, index),
+	};
+}
+
 export function enrichMailboxList(
 	mailboxes: any[] | null | undefined,
 	accountId: string,
 ) {
-	return (mailboxes || []).map((box: any, index: number) => {
-		const special = getFolderSpecial(box.name, box.specialUse);
-		const rawName = box.name || box.path || `folder-${index}`;
-		const slug = rawName.toLowerCase().replace(/[^a-z0-9]/g, "-");
-		const id = box.id ? `fld-${box.id}` : `fld-${slug}`;
-
-		return {
-			...box,
-			id,
-			accountId,
-			fullName: box.path || box.name,
-			displayName: box.name,
-			parentFullName: null,
-			special,
-			uidValidity: box.uidValidity ?? null,
-			unreadCount: Number(box.unseen_count || 0),
-			totalCount: Number(box.total_count || 0),
-			lastSyncedAt: new Date().toISOString(),
-			sortRank: getFolderSortRank(special, index),
-		};
-	});
+	return (mailboxes || []).map((box: any, index: number) =>
+		toClientMailbox(box, accountId, index),
+	);
 }
 
 /**
