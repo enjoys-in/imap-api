@@ -7,6 +7,7 @@ import {
 	MailboxEntity,
 	MailboxQuotaEntity,
 	MessageEntity,
+	PushSubscriptionEntity,
 } from "@/factory/entities";
 
 // Patch TypeORM PostgresQueryRunner to sequence concurrent queries on the same connection,
@@ -52,6 +53,7 @@ export const AppDataSource = new DataSource({
 		MailboxEntity,
 		MailboxQuotaEntity,
 		MessageEntity,
+		PushSubscriptionEntity,
 		"build/factory/entities/**/*.entity.js",
 	],
 	subscribers: [],

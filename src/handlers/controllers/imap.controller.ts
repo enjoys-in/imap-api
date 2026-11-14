@@ -8,6 +8,7 @@ import { imapEmailService } from "../services/ImapEmailService";
 import { imapMailboxService } from "../services/ImapMailboxService";
 import { imapSendService } from "../services/ImapSendService";
 import { imapStreamService } from "../services/ImapStreamService";
+import { pushApiService } from "../services/PushApiService";
 import { vacationSenderService } from "../services/VacationSenderService";
 
 /**
@@ -166,6 +167,24 @@ class ImapController {
 
 	async streamPing(req: Request, res: Response) {
 		return imapStreamService.ping(req, res);
+	}
+
+	// ── Web Push ──
+
+	async pushPublicKey(req: Request, res: Response) {
+		return pushApiService.publicKey(req, res);
+	}
+
+	async pushSubscribe(req: Request, res: Response) {
+		return pushApiService.subscribe(req, res);
+	}
+
+	async pushUnsubscribe(req: Request, res: Response) {
+		return pushApiService.unsubscribe(req, res);
+	}
+
+	async pushTest(req: Request, res: Response) {
+		return pushApiService.test(req, res);
 	}
 
 	// ── Diagnostics & Capabilities ──

@@ -74,6 +74,12 @@ router.get("/quota", ImapController.getQuota);
 router.get("/stream", ImapController.streamEvents);
 router.post("/stream/ping", ImapController.streamPing);
 
+// ── Web Push (background new-mail notifications) ──
+router.get("/push/public-key", ImapController.pushPublicKey);
+router.post("/push/subscribe", ImapController.pushSubscribe);
+router.post("/push/unsubscribe", ImapController.pushUnsubscribe);
+router.post("/push/test", ImapController.pushTest);
+
 // ── Automatic Replies / Vacation Responder (RFC 3834 / RFC 5230) ──
 router.get("/automatic-replies", ImapController.getAutomaticReplies);
 router.post("/automatic-replies", ImapController.updateAutomaticReplies);
