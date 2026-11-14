@@ -1,5 +1,17 @@
 import { DataSource } from "typeorm";
+import { PostgresQueryRunner } from "typeorm/driver/postgres/PostgresQueryRunner";
 import { __CONFIG__ } from ".";
+
+// Patch TypeORM PostgresQueryRunner to sequence concurrent queries on the same connection,
+// resolving pg@8.14+ / pg@9 DeprecationWarning: "Calling client.query() when the client is already executing a query"
+const originalPostgresQuery = PostgresQueryRunner.prototype.query;
+PostgresQueryRunner.prototype.query = function (this: any, ...args: any[]) {
+	const next = (this._queryQueue || Promise.resolve())
+		.catch(() => {})
+		.then(() => originalPostgresQuery.apply(this, args));
+	this._queryQueue = next;
+	return next;
+};
 
 const DB_OPTIONS = {
 	host: __CONFIG__.DATABASE.DB_HOST || "localhost",
@@ -11,6 +23,10 @@ const DB_OPTIONS = {
 const DB = __CONFIG__.DATABASE.DATABASE_URL
 	? { url: __CONFIG__.DATABASE.DATABASE_URL }
 	: DB_OPTIONS;
+
+const isLocalDb =
+	DB_OPTIONS.host === "localhost" || DB_OPTIONS.host === "127.0.0.1";
+
 export const AppDataSource = new DataSource({
 	...DB,
 	type: "postgres",
@@ -22,9 +38,11 @@ export const AppDataSource = new DataSource({
 	migrations: ["build/factory/migrations/**/*.js"],
 	migrationsTableName: "migration_table",
 	ssl: false,
-	extra: {
-		ssl: {
-			rejectUnauthorized: false,
-		},
-	},
+	extra: isLocalDb
+		? {}
+		: {
+				ssl: {
+					rejectUnauthorized: false,
+				},
+			},
 });

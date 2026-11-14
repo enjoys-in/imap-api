@@ -614,16 +614,107 @@ export class ImapAuthService {
 	 * Autodiscovers IMAP and SMTP configurations using Thunderbird XML Autoconfig,
 	 * Outlook Autodiscover XML, and DNS MX records.
 	 */
-	async autodiscover(req: Request, res: Response) {
+	async autodiscover(req: Request, res: Response): Promise<void> {
 		try {
-			const email = (req.query?.email ||
+			let email = (req.query?.email ||
+				req.query?.emailaddress ||
 				req.body?.email ||
 				req.body?.imap_username) as string;
+
+			if (!email && typeof req.body === "string") {
+				const match = req.body.match(/<EMailAddress>([^<]+)<\/EMailAddress>/i);
+				if (match) email = match[1]?.trim();
+			}
+
 			if (!email) {
 				return sendError(res, "Email address is required", undefined, 400);
 			}
+
 			const result = await autodiscoverConfig(email);
-			return sendSuccess(res, result, "Autodiscovery successful");
+
+			const wantsXml =
+				req.path.endsWith(".xml") ||
+				req.query?.format === "xml" ||
+				(Boolean(req.headers.accept?.includes("xml")) &&
+					!req.headers.accept?.includes("json"));
+
+			if (wantsXml) {
+				const isOutlook =
+					req.path.toLowerCase().includes("autodiscover") ||
+					Boolean(
+						req.body &&
+							typeof req.body === "string" &&
+							req.body.includes("schemas.microsoft.com"),
+					);
+
+				if (isOutlook) {
+					res.setHeader("Content-Type", "application/xml; charset=utf-8");
+					res.send(`<?xml version="1.0" encoding="utf-8"?>
+<Autodiscover xmlns="http://schemas.microsoft.com/exchange/autodiscover/responseschema/2006">
+  <Response xmlns="http://schemas.microsoft.com/exchange/autodiscover/outlook/responseschema/2006a">
+    <User>
+      <DisplayName>${result.displayName || result.email}</DisplayName>
+      <EMailAddress>${result.email}</EMailAddress>
+    </User>
+    <Account>
+      <AccountType>email</AccountType>
+      <Action>settings</Action>
+      <Protocol>
+        <Type>IMAP</Type>
+        <Server>${result.imap.host}</Server>
+        <Port>${result.imap.port}</Port>
+        <DomainRequired>off</DomainRequired>
+        <LoginName>${result.imap.username}</LoginName>
+        <SPA>off</SPA>
+        <SSL>${result.imap.secure ? "on" : "off"}</SSL>
+        <AuthRequired>on</AuthRequired>
+      </Protocol>
+      <Protocol>
+        <Type>SMTP</Type>
+        <Server>${result.smtp.host}</Server>
+        <Port>${result.smtp.port}</Port>
+        <DomainRequired>off</DomainRequired>
+        <LoginName>${result.smtp.username}</LoginName>
+        <SPA>off</SPA>
+        <SSL>${result.smtp.secure ? "on" : "off"}</SSL>
+        <AuthRequired>on</AuthRequired>
+      </Protocol>
+    </Account>
+  </Response>
+</Autodiscover>`);
+					return;
+				}
+
+				res.setHeader("Content-Type", "application/xml; charset=utf-8");
+				res.send(`<?xml version="1.0" encoding="UTF-8"?>
+<clientConfig version="1.1">
+  <emailProvider id="${result.domain}">
+    <domain>${result.domain}</domain>
+    <displayName>${result.displayName || result.domain}</displayName>
+    <displayShortName>${result.domain}</displayShortName>
+    <incomingServer type="imap">
+      <hostname>${result.imap.host}</hostname>
+      <port>${result.imap.port}</port>
+      <socketType>${result.imap.secure ? "SSL" : "STARTTLS"}</socketType>
+      <authentication>password-cleartext</authentication>
+      <username>${result.imap.username}</username>
+    </incomingServer>
+    <outgoingServer type="smtp">
+      <hostname>${result.smtp.host}</hostname>
+      <port>${result.smtp.port}</port>
+      <socketType>${result.smtp.secure ? "SSL" : "STARTTLS"}</socketType>
+      <authentication>password-cleartext</authentication>
+      <username>${result.smtp.username}</username>
+    </outgoingServer>
+  </emailProvider>
+</clientConfig>`);
+				return;
+			}
+
+			return sendSuccess(res, result, "Autodiscovery successful", {
+				data: result,
+				...result,
+			});
 		} catch (error) {
 			return sendError(res, error, "Autodiscovery failed");
 		}

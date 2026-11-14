@@ -41,7 +41,7 @@ class ImapController {
 	}
 
 	@PublicRoute()
-	async autodiscover(req: Request, res: Response) {
+	async autodiscover(req: Request, res: Response): Promise<void> {
 		return imapAuthService.autodiscover(req, res);
 	}
 
@@ -220,7 +220,7 @@ class ImapController {
 
 	async getAutomaticReplies(req: Request, res: Response) {
 		try {
-			const userEmail = (req.user?.email ||
+			const userEmail = ((req as any).user?.email ||
 				req.query?.accountEmail ||
 				req.params?.accountId) as string;
 			if (!userEmail) throw new Error("Account email or login required");
@@ -245,7 +245,7 @@ class ImapController {
 
 	async updateAutomaticReplies(req: Request, res: Response) {
 		try {
-			const userEmail = (req.user?.email ||
+			const userEmail = ((req as any).user?.email ||
 				req.body?.accountEmail ||
 				req.params?.accountId) as string;
 			if (!userEmail) throw new Error("Account email or login required");
