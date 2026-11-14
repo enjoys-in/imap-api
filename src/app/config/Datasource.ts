@@ -8,7 +8,7 @@ const originalPostgresQuery = PostgresQueryRunner.prototype.query;
 PostgresQueryRunner.prototype.query = function (this: any, ...args: any[]) {
 	const next = (this._queryQueue || Promise.resolve())
 		.catch(() => {})
-		.then(() => originalPostgresQuery.apply(this, args));
+		.then(() => (originalPostgresQuery as any).apply(this, args));
 	this._queryQueue = next;
 	return next;
 };

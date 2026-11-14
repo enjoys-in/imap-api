@@ -8,56 +8,54 @@ import ApiRoutes from "./api";
 const router = Router();
 
 // Public Autodiscover & Autoconfig endpoints
-for (const path of [
-	"/autodiscover",
-	"/Autodiscover",
-	"/autodiscover.json",
-	"/autodiscover.xml",
-	"/autodiscover/autodiscover.xml",
-	"/Autodiscover/Autodiscover.xml",
-]) {
-	(router as any).get(path, ImapController.autodiscover);
-	(router as any).post(path, ImapController.autodiscover);
-}
-
-for (const path of [
-	"/mail/config-v1.1.xml",
-	"/.well-known/autoconfig/mail/config-v1.1.xml",
-]) {
-	(router as any).get(path, ImapController.autodiscover);
-}
+router.get(
+  ["/autodiscover", "/Autodiscover", "/autodiscover.json", "/autodiscover.xml"],
+  ImapController.autodiscover,
+);
+router.post(
+  ["/autodiscover", "/Autodiscover", "/autodiscover.xml"],
+  ImapController.autodiscover,
+);
+router.get(
+  ["/autodiscover/autodiscover.xml", "/Autodiscover/Autodiscover.xml"],
+  ImapController.autodiscover,
+);
+router.post(
+  ["/autodiscover/autodiscover.xml", "/Autodiscover/Autodiscover.xml"],
+  ImapController.autodiscover,
+);
+router.get(
+  ["/mail/config-v1.1.xml", "/.well-known/autoconfig/mail/config-v1.1.xml"],
+  ImapController.autodiscover,
+);
 
 // Direct Root Setup & Authentication Aliases (resilience for root callers)
-router.post("/setup-stream", ImapController.setupStream);
-router.post("/authenticate", ImapController.loginUser);
-
-// 1. Versioned with legacy /imap prefix: /api/v1/imap/*
-router.use(
-	`/api/${__CONFIG__.APP.API_VERSION}/imap`,
-	JwtAuth.validateUser,
-	ApiRoutes,
+router.post(
+  `/api/${__CONFIG__.APP.API_VERSION}/imap/setup-stream`,
+  ImapController.setupStream,
+);
+router.post(
+  `/api/${__CONFIG__.APP.API_VERSION}/imap/authenticate`,
+  ImapController.loginUser,
 );
 
-// 2. Standard versioned API: /api/v1/*
+// Versioned with legacy /imap prefix: /api/v1/imap/*
 router.use(
-	`/api/${__CONFIG__.APP.API_VERSION}`,
-	JwtAuth.validateUser,
-	ApiRoutes,
+  `/api/${__CONFIG__.APP.API_VERSION}/imap`,
+  JwtAuth.validateUser,
+  ApiRoutes,
 );
-
-// 3. Fallback unversioned API: /api/*
-router.use("/api", JwtAuth.validateUser, ApiRoutes);
 
 router.use("*", (req: Request, res: Response) => {
-	throw new HttpException({
-		name: "NOT_FOUND",
-		message: "Route Not Found",
-		stack: {
-			info: "Forbidden Resource",
-			path: req.baseUrl,
-			method: req.method,
-		},
-	});
+  throw new HttpException({
+    name: "NOT_FOUND",
+    message: "Route Not Found",
+    stack: {
+      info: "Forbidden Resource",
+      path: req.baseUrl,
+      method: req.method,
+    },
+  });
 });
 
 export default router;

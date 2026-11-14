@@ -632,6 +632,18 @@ export class ImapAuthService {
 
 			const result = await autodiscoverConfig(email);
 
+			if (!result.success || !result.imap || !result.smtp) {
+				return sendSuccess(
+					res,
+					result,
+					result.message || "No autodiscover settings found for domain",
+					{
+						found: false,
+						...result,
+					},
+				);
+			}
+
 			const wantsXml =
 				req.path.endsWith(".xml") ||
 				req.query?.format === "xml" ||
