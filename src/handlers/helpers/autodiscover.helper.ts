@@ -175,9 +175,7 @@ function parseThunderbirdXml(
 			?.toUpperCase();
 		const smtpSecure = smtpSocket === "SSL" || smtpPort === 465;
 
-		const displayName = xml.match(
-			/<displayName>([^<]+)<\/displayName>/i,
-		)?.[1];
+		const displayName = xml.match(/<displayName>([^<]+)<\/displayName>/i)?.[1];
 
 		return {
 			success: true,

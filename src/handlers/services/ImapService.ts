@@ -1,5 +1,5 @@
-import type { ImapConfig } from "@/utils/interfaces/imap.interface";
 import { Logging } from "@/logs";
+import type { ImapConfig } from "@/utils/interfaces/imap.interface";
 import {
 	type FetchMessageObject,
 	type FetchQueryObject,
@@ -806,7 +806,9 @@ export class ImapService {
 						const colonIdx = line.indexOf(":");
 						if (colonIdx > 0) {
 							currentHeader = line.substring(0, colonIdx).trim().toLowerCase();
-							parsedHeaders[currentHeader] = line.substring(colonIdx + 1).trim();
+							parsedHeaders[currentHeader] = line
+								.substring(colonIdx + 1)
+								.trim();
 						}
 					}
 				}

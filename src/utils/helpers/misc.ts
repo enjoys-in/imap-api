@@ -41,7 +41,8 @@ export class MiscellaneousHelper {
 
 	public static getDomainUrl(request: import("express").Request) {
 		const host =
-			(request.headers["x-forwarded-host"] as string) ?? (request.headers["host"] as string);
+			(request.headers["x-forwarded-host"] as string) ??
+			(request.headers["host"] as string);
 		if (!host) return null;
 
 		const protocol = host.includes("localhost") ? "http" : "https";

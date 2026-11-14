@@ -1,7 +1,4 @@
-import {
-	CacheEngineFactory,
-	type CacheEngineType,
-} from "./CacheEngineFactory";
+import { CacheEngineFactory, type CacheEngineType } from "./CacheEngineFactory";
 import type { ICacheEngine } from "./interfaces/ICacheEngine";
 
 /**
@@ -108,10 +105,7 @@ export class ImapCacheService {
 
 	// ── Quota ──
 
-	async getQuota(
-		email: string,
-		folder = "INBOX",
-	): Promise<any | undefined> {
+	async getQuota(email: string, folder = "INBOX"): Promise<any | undefined> {
 		const key = `quota:${email.toLowerCase()}:${folder.toLowerCase()}`;
 		return this.engine.get(key);
 	}

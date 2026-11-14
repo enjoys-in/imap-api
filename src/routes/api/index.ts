@@ -76,8 +76,17 @@ router.get("/stream", ImapController.streamEvents);
 router.get("/automatic-replies", ImapController.getAutomaticReplies);
 router.post("/automatic-replies", ImapController.updateAutomaticReplies);
 router.put("/automatic-replies", ImapController.updateAutomaticReplies);
-router.get("/accounts/:accountId/automatic-replies", ImapController.getAutomaticReplies);
-router.put("/accounts/:accountId/automatic-replies", ImapController.updateAutomaticReplies);
-router.post("/accounts/:accountId/automatic-replies", ImapController.updateAutomaticReplies);
+router.get(
+	"/accounts/:accountId/automatic-replies",
+	ImapController.getAutomaticReplies,
+);
+router.put(
+	"/accounts/:accountId/automatic-replies",
+	ImapController.updateAutomaticReplies,
+);
+router.post(
+	"/accounts/:accountId/automatic-replies",
+	ImapController.updateAutomaticReplies,
+);
 
 export default router;

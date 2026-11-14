@@ -63,7 +63,10 @@ export function parseSearchQueryString(rawQuery: string): ParsedSearchQuery {
 				imapQuery.body = val;
 				break;
 			case "has":
-				if (val.toLowerCase() === "attachment" || val.toLowerCase() === "file") {
+				if (
+					val.toLowerCase() === "attachment" ||
+					val.toLowerCase() === "file"
+				) {
 					hasAttachment = true;
 				}
 				break;
@@ -75,7 +78,10 @@ export function parseSearchQueryString(rawQuery: string): ParsedSearchQuery {
 			case "is":
 				if (val.toLowerCase() === "unread") {
 					imapQuery.seen = false;
-				} else if (val.toLowerCase() === "read" || val.toLowerCase() === "seen") {
+				} else if (
+					val.toLowerCase() === "read" ||
+					val.toLowerCase() === "seen"
+				) {
 					imapQuery.seen = true;
 				} else if (
 					val.toLowerCase() === "flagged" ||

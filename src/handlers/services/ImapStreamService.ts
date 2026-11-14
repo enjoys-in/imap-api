@@ -1,7 +1,7 @@
+import { Logging } from "@/logs";
 import type { Request, Response } from "express";
 import { ImapFactory } from "../factory/ImapFactory";
 import { vacationSenderService } from "./VacationSenderService";
-import { Logging } from "@/logs";
 
 export enum ImapStreamEvent {
 	CONNECTED = "connected",

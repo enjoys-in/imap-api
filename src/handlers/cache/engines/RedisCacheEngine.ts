@@ -1,6 +1,6 @@
-import { type RedisClientType, createClient } from "redis";
 import { __CONFIG__ } from "@/app/config";
 import { Logging } from "@/logs";
+import { type RedisClientType, createClient } from "redis";
 import type { ICacheEngine } from "../interfaces/ICacheEngine";
 
 export interface RedisCacheEngineOptions {

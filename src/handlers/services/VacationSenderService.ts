@@ -1,7 +1,7 @@
-import { createTransport } from "nodemailer";
 import { AutomaticReplyEntity } from "@/factory/entities/auto_reply.entity";
 import { InjectRepository } from "@/factory/typeorm";
 import { Logging } from "@/logs";
+import { createTransport } from "nodemailer";
 import { imapCache } from "../cache/ImapCacheService";
 import imapBaseService from "./imapBaseService";
 
@@ -41,13 +41,17 @@ export class VacationSenderService {
 	/**
 	 * Retrieves current automatic reply configuration for an account.
 	 */
-	async getSettings(accountEmail: string): Promise<AutomaticReplyEntity | null> {
+	async getSettings(
+		accountEmail: string,
+	): Promise<AutomaticReplyEntity | null> {
 		try {
 			return await this.repo.findOne({
 				where: { account_email: accountEmail.toLowerCase() },
 			});
 		} catch (error: any) {
-			Logging.dev(`[VacationSenderService] getSettings error: ${error?.message}`);
+			Logging.dev(
+				`[VacationSenderService] getSettings error: ${error?.message}`,
+			);
 			return null;
 		}
 	}
@@ -88,7 +92,8 @@ export class VacationSenderService {
 		if (dto.replyOutsideOrg !== undefined)
 			entity.reply_outside_org = Boolean(dto.replyOutsideOrg);
 		if (dto.messageText !== undefined) entity.message_text = dto.messageText;
-		if (dto.messageHtml !== undefined) entity.message_html = dto.messageHtml || null;
+		if (dto.messageHtml !== undefined)
+			entity.message_html = dto.messageHtml || null;
 		if (dto.rateLimitDays !== undefined)
 			entity.rate_limit_days = Number(dto.rateLimitDays) || 1;
 		if (dto.blockCalendar !== undefined)
@@ -118,7 +123,10 @@ export class VacationSenderService {
 		// 1. Time Window Evaluation
 		if (settings.only_during_period) {
 			const now = Date.now();
-			if (settings.start_time && now < new Date(settings.start_time).getTime()) {
+			if (
+				settings.start_time &&
+				now < new Date(settings.start_time).getTime()
+			) {
 				return false;
 			}
 			if (settings.end_time && now > new Date(settings.end_time).getTime()) {

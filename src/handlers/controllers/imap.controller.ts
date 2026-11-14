@@ -1,6 +1,7 @@
 import { PublicRoute } from "@/utils/decorators";
 import type { ImapRequestBody } from "@/utils/interfaces/imap.interface";
 import type { Request, Response } from "express";
+import { sendError, sendSuccess } from "../helpers/response.helper";
 import { imapAuthService } from "../services/ImapAuthService";
 import { imapDiagnosticsService } from "../services/ImapDiagnosticsService";
 import { imapEmailService } from "../services/ImapEmailService";
@@ -8,7 +9,6 @@ import { imapMailboxService } from "../services/ImapMailboxService";
 import { imapSendService } from "../services/ImapSendService";
 import { imapStreamService } from "../services/ImapStreamService";
 import { vacationSenderService } from "../services/VacationSenderService";
-import { sendError, sendSuccess } from "../helpers/response.helper";
 
 /**
  * Controller facade for IMAP operations.
@@ -220,11 +220,9 @@ class ImapController {
 
 	async getAutomaticReplies(req: Request, res: Response) {
 		try {
-			const userEmail = (
-				req.user?.email ||
+			const userEmail = (req.user?.email ||
 				req.query?.accountEmail ||
-				req.params?.accountId
-			) as string;
+				req.params?.accountId) as string;
 			if (!userEmail) throw new Error("Account email or login required");
 			const settings = await vacationSenderService.getSettings(userEmail);
 			return sendSuccess(
@@ -247,11 +245,9 @@ class ImapController {
 
 	async updateAutomaticReplies(req: Request, res: Response) {
 		try {
-			const userEmail = (
-				req.user?.email ||
+			const userEmail = (req.user?.email ||
 				req.body?.accountEmail ||
-				req.params?.accountId
-			) as string;
+				req.params?.accountId) as string;
 			if (!userEmail) throw new Error("Account email or login required");
 			const updated = await vacationSenderService.updateSettings(
 				userEmail,

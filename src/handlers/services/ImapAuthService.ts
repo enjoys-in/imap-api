@@ -7,14 +7,14 @@ import { REDIS_KEY_NAME } from "@/utils/interfaces/redisName.interface";
 import { AppRoles } from "@/utils/interfaces/user.interface";
 import { Cache } from "@/utils/services/redis/cacheService";
 import type { Request, Response } from "express";
+import { createTransport } from "nodemailer";
 import { imapCache } from "../cache/ImapCacheService";
 import { ImapFactory } from "../factory/ImapFactory";
+import { autodiscoverConfig } from "../helpers/autodiscover.helper";
 import { enrichEmailList, enrichMailboxList } from "../helpers/email.helper";
 import { sendError, sendSuccess } from "../helpers/response.helper";
 import { getAuthenticatedImapService } from "../helpers/session.helper";
-import { autodiscoverConfig } from "../helpers/autodiscover.helper";
 import imapBaseService from "./imapBaseService";
-import { createTransport } from "nodemailer";
 
 const securityService = new Security();
 
@@ -120,7 +120,10 @@ export class ImapAuthService {
 	 * If ?stream=true query is provided, delegates to setupStream for real-time progress logging.
 	 */
 	async validateNewUser(req: Request<{}, {}, ImapRequestBody>, res: Response) {
-		if (req.query?.stream === "true" || req.headers.accept?.includes("text/event-stream")) {
+		if (
+			req.query?.stream === "true" ||
+			req.headers.accept?.includes("text/event-stream")
+		) {
 			return this.setupStream(req, res);
 		}
 
@@ -163,7 +166,8 @@ export class ImapAuthService {
 				{
 					mid: isUser.id,
 					email: req.body.imap_username,
-					display_name: isUser.display_name || req.body.imap_username.split("@")[0],
+					display_name:
+						isUser.display_name || req.body.imap_username.split("@")[0],
 					domain_name: domain,
 					role: AppRoles.USER,
 				},
@@ -186,7 +190,8 @@ export class ImapAuthService {
 				user: {
 					mid: isUser.id,
 					email: req.body.imap_username,
-					display_name: isUser.display_name || req.body.imap_username.split("@")[0],
+					display_name:
+						isUser.display_name || req.body.imap_username.split("@")[0],
 					domain_name: domain,
 					role: AppRoles.USER,
 				},
@@ -256,7 +261,12 @@ export class ImapAuthService {
 			};
 
 			if (!config.imap_host || !config.imap_username || !config.imap_password) {
-				sendLog("init", "error", "Missing required IMAP connection parameters.", 5);
+				sendLog(
+					"init",
+					"error",
+					"Missing required IMAP connection parameters.",
+					5,
+				);
 				res.end();
 				return;
 			}
@@ -351,7 +361,12 @@ export class ImapAuthService {
 					}
 				}
 			} else {
-				sendLog("smtp_verify", "warning", "SMTP check skipped as requested.", 60);
+				sendLog(
+					"smtp_verify",
+					"warning",
+					"SMTP check skipped as requested.",
+					60,
+				);
 			}
 
 			// ── Stage 3: Discovering Mailbox Hierarchy & Folder Synchronization ──
@@ -365,7 +380,10 @@ export class ImapAuthService {
 			const rawMailboxes = await imap.syncFolders();
 			let isUser = await imapBaseService.getUserEmail(config.imap_username);
 			const userMid = isUser?.id || 1;
-			const enrichedMailboxes = enrichMailboxList(rawMailboxes, `acc-${userMid}`);
+			const enrichedMailboxes = enrichMailboxList(
+				rawMailboxes,
+				`acc-${userMid}`,
+			);
 			await imapCache.setMailboxes(config.imap_username, enrichedMailboxes, 30);
 
 			sendLog(
@@ -425,12 +443,15 @@ export class ImapAuthService {
 				});
 			}
 
-			const domain = MiscellaneousHelper.getOnlyDomainFromEmail(config.imap_username);
+			const domain = MiscellaneousHelper.getOnlyDomainFromEmail(
+				config.imap_username,
+			);
 			const signJWT = utils.signJWT(
 				{
 					mid: isUser.id,
 					email: config.imap_username,
-					display_name: config.display_name || config.imap_username.split("@")[0],
+					display_name:
+						config.display_name || config.imap_username.split("@")[0],
 					domain_name: domain,
 					role: AppRoles.USER,
 				},
@@ -455,7 +476,8 @@ export class ImapAuthService {
 					user: {
 						mid: isUser.id,
 						email: config.imap_username,
-						display_name: config.display_name || config.imap_username.split("@")[0],
+						display_name:
+							config.display_name || config.imap_username.split("@")[0],
 						domain_name: domain,
 					},
 					token: signJWT,

@@ -7,12 +7,12 @@ import {
 } from "../helpers/email.helper";
 import { resolveMailboxFolder } from "../helpers/folder.helper";
 import { normalizeEmailBody } from "../helpers/mime.helper";
-import { parseSearchQueryString } from "../helpers/search.helper";
 import {
 	sendAccepted,
 	sendError,
 	sendSuccess,
 } from "../helpers/response.helper";
+import { parseSearchQueryString } from "../helpers/search.helper";
 import { getAuthenticatedImapService } from "../helpers/session.helper";
 import { ImapJobProcessor } from "../jobs/ImapJobProcessor";
 import { ImapJobType } from "../jobs/types";
@@ -107,7 +107,11 @@ export class ImapEmailService {
 			const userEmail = req.user?.email as string;
 
 			// Check TTL cache first (10 min TTL)
-			const cached = await imapCache.getEmailBody(userEmail, selectedMailbox, uid);
+			const cached = await imapCache.getEmailBody(
+				userEmail,
+				selectedMailbox,
+				uid,
+			);
 			if (cached) {
 				return sendSuccess(res, cached, "OK", {
 					bodyHtml: cached.bodyHtml,
@@ -126,7 +130,13 @@ export class ImapEmailService {
 			const resultData = normalizeEmailBody(parsed);
 
 			// Cache normalized body
-			await imapCache.setEmailBody(userEmail, selectedMailbox, uid, resultData, 600);
+			await imapCache.setEmailBody(
+				userEmail,
+				selectedMailbox,
+				uid,
+				resultData,
+				600,
+			);
 
 			return sendSuccess(res, resultData, "OK", {
 				bodyHtml: resultData.bodyHtml,
@@ -381,7 +391,8 @@ export class ImapEmailService {
 			} else if (typeof rawQuery === "object") {
 				imapSearchQuery = rawQuery;
 				if (rawQuery.hasAttachment) filterAttachment = true;
-				if (rawQuery.fileName) filterFileName = String(rawQuery.fileName).toLowerCase();
+				if (rawQuery.fileName)
+					filterFileName = String(rawQuery.fileName).toLowerCase();
 			} else {
 				imapSearchQuery = { text: String(rawQuery) };
 			}
@@ -394,12 +405,11 @@ export class ImapEmailService {
 			);
 
 			if (!foundUids || !Array.isArray(foundUids) || foundUids.length === 0) {
-				return sendSuccess(
-					res,
-					{ emails: [], totalCount: 0, uids: [] },
-					"OK",
-					{ emails: [], totalCount: 0, uids: [] },
-				);
+				return sendSuccess(res, { emails: [], totalCount: 0, uids: [] }, "OK", {
+					emails: [],
+					totalCount: 0,
+					uids: [],
+				});
 			}
 
 			// Sort newest first
@@ -422,7 +432,8 @@ export class ImapEmailService {
 
 			if (filterAttachment) {
 				enrichedEmails = enrichedEmails.filter(
-					(e: any) => e.hasAttachments || (e.attachments && e.attachments.length > 0),
+					(e: any) =>
+						e.hasAttachments || (e.attachments && e.attachments.length > 0),
 				);
 			}
 

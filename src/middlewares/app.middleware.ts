@@ -35,7 +35,7 @@ export class AppMiddlewares {
 		return (req: Request, res: Response, next: NextFunction) => {
 			const headers = req.headers;
 			const apiKey = headers.api_key || undefined;
-		if (typeof apiKey === "undefined") {
+			if (typeof apiKey === "undefined") {
 				res.status(401).json({
 					success: false,
 					result: {

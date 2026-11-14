@@ -4,7 +4,8 @@ import CryptoJS from "crypto-js";
 import type { RoutingMethods } from "../interfaces/routes.interface";
 const ALGORITHM = "aes-256-cbc";
 const ENCODING = "hex";
-const ENCRYPTION_KEY: string = process.env.ENCRYPTION_KEY || "enjoys_encrption_key!@#%^&*()_NJ";
+const ENCRYPTION_KEY: string =
+	process.env.ENCRYPTION_KEY || "enjoys_encrption_key!@#%^&*()_NJ";
 const IV_LENGTH = 16;
 
 /**
@@ -226,9 +227,7 @@ export class Security {
 		}
 
 		const secret = clientSecret || __CONFIG__.SECRETS.APP_SECRET;
-		const hmac = crypto
-			.createHmac("sha512", secret)
-			.update(decodedString);
+		const hmac = crypto.createHmac("sha512", secret).update(decodedString);
 		return hmac.digest("hex");
 	}
 	/**
@@ -246,7 +245,12 @@ export class Security {
 		body: any,
 		clientSecret: string,
 	): Promise<boolean> {
-		const expectedSignature = await this.GenerateSignature(method, uri, body, clientSecret);
+		const expectedSignature = await this.GenerateSignature(
+			method,
+			uri,
+			body,
+			clientSecret,
+		);
 		const expectedBuf = Buffer.from(expectedSignature, "hex");
 		const providedBuf = Buffer.from(clientSecret, "hex");
 		if (expectedBuf.length !== providedBuf.length) return false;

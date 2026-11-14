@@ -8,8 +8,9 @@ const DB_OPTIONS = {
 	password: __CONFIG__.DATABASE.DB_PASS,
 	database: __CONFIG__.DATABASE.DB_NAME,
 };
-const DB =
-	__CONFIG__.DATABASE.DATABASE_URL ? { url: __CONFIG__.DATABASE.DATABASE_URL } : DB_OPTIONS;
+const DB = __CONFIG__.DATABASE.DATABASE_URL
+	? { url: __CONFIG__.DATABASE.DATABASE_URL }
+	: DB_OPTIONS;
 export const AppDataSource = new DataSource({
 	...DB,
 	type: "postgres",
