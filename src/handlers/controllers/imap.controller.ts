@@ -164,6 +164,10 @@ class ImapController {
 		return imapStreamService.streamEvents(req, res);
 	}
 
+	async streamPing(req: Request, res: Response) {
+		return imapStreamService.ping(req, res);
+	}
+
 	// ── Diagnostics & Capabilities ──
 
 	async connectionStatus(req: Request, res: Response) {

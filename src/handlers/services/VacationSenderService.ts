@@ -3,6 +3,8 @@ import { InjectRepository } from "@/factory/typeorm";
 import { Logging } from "@/logs";
 import { createTransport } from "nodemailer";
 import { imapCache } from "../cache/ImapCacheService";
+import { formatImapError } from "../helpers/error.helper";
+import type { ImapService } from "./ImapService";
 import imapBaseService from "./imapBaseService";
 
 export interface InboundEmailContext {
@@ -33,9 +35,80 @@ export interface AutoReplySettingsDto {
  * Implements strict RFC 3834 & RFC 5230 anti-loop safeguards, time window
  * evaluation, and recipient deduplication across our multi-engine cache.
  */
+const ARRIVAL_MEMORY_MS = 1000;
+
 export class VacationSenderService {
+	private readonly arrivals = new Map<string, boolean>();
+	private readonly recent = new Map<string, number>();
+
 	private get repo() {
 		return InjectRepository(AutomaticReplyEntity);
+	}
+
+	async isActive(accountEmail: string): Promise<boolean> {
+		const settings = await this.getSettings(accountEmail);
+		if (!settings || !settings.is_enabled) {
+			return false;
+		}
+		if (!settings.only_during_period) {
+			return true;
+		}
+		const now = Date.now();
+		if (settings.start_time && now < new Date(settings.start_time).getTime()) {
+			return false;
+		}
+		if (settings.end_time && now > new Date(settings.end_time).getTime()) {
+			return false;
+		}
+		return true;
+	}
+
+	async handleArrival(
+		imap: ImapService,
+		accountEmail: string,
+		path: string,
+		count: number,
+	): Promise<void> {
+		if (path.toUpperCase() !== "INBOX") {
+			return;
+		}
+		const key = accountEmail.toLowerCase();
+		const stamp = Date.now();
+		for (const [seen, at] of this.recent) {
+			if (stamp - at > ARRIVAL_MEMORY_MS) {
+				this.recent.delete(seen);
+			}
+		}
+		const arrival = `${key}|${count}`;
+		if (this.recent.has(arrival)) {
+			return;
+		}
+		this.recent.set(arrival, stamp);
+		if (this.arrivals.has(key)) {
+			this.arrivals.set(key, true);
+			return;
+		}
+		this.arrivals.set(key, false);
+		try {
+			let again = true;
+			while (again) {
+				this.arrivals.set(key, false);
+				if (!(await this.isActive(key))) {
+					return;
+				}
+				const latest = await imap.fetchLatestMessageContext(path);
+				if (latest) {
+					await this.evaluateAndSendVacationReply(key, latest);
+				}
+				again = this.arrivals.get(key) === true;
+			}
+		} catch (error) {
+			Logging.dev(
+				`[VacationSenderService] arrival check: ${formatImapError(error)}`,
+			);
+		} finally {
+			this.arrivals.delete(key);
+		}
 	}
 
 	/**

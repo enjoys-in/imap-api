@@ -1,18 +1,31 @@
+import { imapCache } from "../cache/ImapCacheService";
+import type { ImapService } from "./ImapService";
 import { ImapStreamEvent } from "./ImapStreamEvent";
 import type { SyncDelta } from "./MessageSyncService";
+import { quotaService } from "./QuotaService";
 
 const NEW_MESSAGE_PREVIEW_LIMIT = 5;
 const EXPUNGE_EVENT_LIMIT = 50;
 
 export type Publish = (event: string, data: unknown) => void;
 
+export interface SyncAnnounceContext {
+	imap: ImapService;
+	email: string;
+	connectionId: number;
+	publish: Publish;
+	isClosed: () => boolean;
+}
+
 export function announceDelta(
 	publish: Publish,
 	delta: SyncDelta,
 	quota: unknown | null,
 	flagHints?: Map<number, string[]>,
+	quotaDeferred = false,
 ): boolean {
 	const { path } = delta;
+	const deferred = quotaDeferred ? { quotaDeferred: true } : {};
 	let announced = false;
 
 	if (delta.added.length > 0) {
@@ -31,6 +44,7 @@ export function announceDelta(
 				date: message.date,
 			})),
 			quota,
+			...deferred,
 		});
 	}
 
@@ -42,6 +56,7 @@ export function announceDelta(
 			totalCount: delta.totalCount,
 			unreadCount: delta.unseenCount,
 			quota,
+			...deferred,
 		};
 		if (delta.removed.length <= EXPUNGE_EVENT_LIMIT) {
 			for (const uid of delta.removed) {
@@ -79,5 +94,57 @@ export function announceDelta(
 		});
 	}
 
+	return announced;
+}
+
+const quotaRefreshes = new Map<number, Promise<unknown>>();
+
+function sharedQuotaRefresh(context: SyncAnnounceContext): Promise<unknown> {
+	const running = quotaRefreshes.get(context.connectionId);
+	if (running) {
+		return running;
+	}
+	const next = quotaService
+		.refresh(context.imap, context.email, context.connectionId, "INBOX")
+		.finally(() => quotaRefreshes.delete(context.connectionId));
+	quotaRefreshes.set(context.connectionId, next);
+	return next;
+}
+
+async function followWithQuota(context: SyncAnnounceContext): Promise<void> {
+	try {
+		const quota = await sharedQuotaRefresh(context);
+		if (quota && !context.isClosed()) {
+			context.publish(ImapStreamEvent.QUOTA_UPDATE, { quota });
+		}
+	} catch {
+		return;
+	}
+}
+
+export async function announceSync(
+	context: SyncAnnounceContext,
+	delta: SyncDelta,
+	flagHints?: Map<number, string[]>,
+): Promise<boolean> {
+	await imapCache.invalidateMailboxes(context.email);
+	for (const uid of delta.removed) {
+		await imapCache.invalidateEmailBody(context.email, delta.path, uid);
+	}
+	if (context.isClosed()) {
+		return false;
+	}
+
+	const sizeChanged = delta.added.length > 0 || delta.removed.length > 0;
+	const announced = announceDelta(
+		context.publish,
+		delta,
+		null,
+		flagHints,
+		sizeChanged,
+	);
+	if (sizeChanged) {
+		void followWithQuota(context);
+	}
 	return announced;
 }

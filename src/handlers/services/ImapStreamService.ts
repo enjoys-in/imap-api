@@ -1,19 +1,31 @@
 import { Logging } from "@/logs";
 import type { Request, Response } from "express";
-import { imapCache } from "../cache/ImapCacheService";
+import { randomUUID } from "node:crypto";
 import { ImapFactory } from "../factory/ImapFactory";
 import { formatImapError } from "../helpers/error.helper";
+import { requireIdentity } from "../helpers/mailbox.helper";
+import { sendError, sendSuccess } from "../helpers/response.helper";
 import { folderWatcher } from "./FolderWatcher";
 import { imapEventHub } from "./ImapEventHub";
 import { ImapStreamEvent } from "./ImapStreamEvent";
 import { messageSyncService } from "./MessageSyncService";
-import { quotaService } from "./QuotaService";
-import { announceDelta } from "./SyncAnnouncer";
+import { streamPresence } from "./StreamPresence";
+import { announceSync } from "./SyncAnnouncer";
 import { vacationSenderService } from "./VacationSenderService";
 
 export { ImapStreamEvent };
 
-const SYNC_DEBOUNCE_MS = 300;
+const SYNC_DEBOUNCE_MS = 60;
+const TAB_ID_PATTERN = /^[A-Za-z0-9_-]{8,64}$/;
+const MAX_FOLDER_PATH = 500;
+
+const readTabId = (value: unknown): string | null =>
+	typeof value === "string" && TAB_ID_PATTERN.test(value) ? value : null;
+
+const readFolder = (value: unknown): string | null =>
+	typeof value === "string" && value.length > 0 && value.length <= MAX_FOLDER_PATH
+		? value
+		: null;
 
 export class ImapStreamService {
 	/**
@@ -61,7 +73,7 @@ export class ImapStreamService {
 		const timers = new Map<string, NodeJS.Timeout>();
 		const flagHints = new Map<string, Map<number, string[]>>();
 
-		const syncFolder = async (path: string) => {
+		const syncFolder = async (path: string, signalledAt: number) => {
 			const hints = flagHints.get(path);
 			flagHints.delete(path);
 
@@ -70,24 +82,19 @@ export class ImapStreamService {
 					imapService,
 					Number(userMid),
 					path,
+					signalledAt,
 				);
-				await imapCache.invalidateMailboxes(userEmail);
-				for (const uid of delta.removed) {
-					await imapCache.invalidateEmailBody(userEmail, path, uid);
-				}
-
-				const changed = delta.added.length > 0 || delta.removed.length > 0;
-				const quota = changed
-					? await quotaService
-							.refresh(imapService, userEmail, Number(userMid), "INBOX")
-							.catch(() => null)
-					: null;
-
-				if (closed) {
-					return;
-				}
-
-				announceDelta(sendEvent, delta, quota, hints);
+				await announceSync(
+					{
+						imap: imapService,
+						email: userEmail,
+						connectionId: Number(userMid),
+						publish: sendEvent,
+						isClosed: () => closed,
+					},
+					delta,
+					hints,
+				);
 			} catch (error) {
 				Logging.dev(
 					`[ImapStreamService] Sync of ${path} failed: ${formatImapError(error)}`,
@@ -102,11 +109,14 @@ export class ImapStreamService {
 			if (timers.has(path)) {
 				return;
 			}
+			const signalledAt = Date.now();
 			timers.set(
 				path,
 				setTimeout(() => {
 					timers.delete(path);
-					queue = queue.then(() => (closed ? undefined : syncFolder(path)));
+					queue = queue.then(() =>
+						closed ? undefined : syncFolder(path, signalledAt),
+					);
 				}, SYNC_DEBOUNCE_MS),
 			);
 		};
@@ -116,25 +126,16 @@ export class ImapStreamService {
 			count: number;
 			prevCount: number;
 		}) => {
-			scheduleSync(data?.path || "INBOX");
+			const path = data?.path || "INBOX";
+			scheduleSync(path);
 
-			// If new message arrived, check and trigger vacation auto-reply asynchronously
 			if (data && data.count > (data.prevCount ?? 0)) {
-				setImmediate(async () => {
-					try {
-						const latestMsg = await imapService.fetchLatestMessageContext(
-							data.path || "INBOX",
-						);
-						if (latestMsg) {
-							await vacationSenderService.evaluateAndSendVacationReply(
-								userEmail,
-								latestMsg,
-							);
-						}
-					} catch (err: any) {
-						Logging.dev(`[ImapStreamService AutoReply Check] ${err?.message}`);
-					}
-				});
+				void vacationSenderService.handleArrival(
+					imapService,
+					userEmail,
+					path,
+					data.count,
+				);
 			}
 		};
 		const onExpunged = (data: { path: string }) => {
@@ -160,6 +161,10 @@ export class ImapStreamService {
 		const unsubscribeHub = imapEventHub.subscribe(userEmail, (event, data) =>
 			sendEvent(event, data),
 		);
+		const closePresence = streamPresence.open(
+			Number(userMid),
+			readTabId(req.query?.tab) ?? randomUUID(),
+		);
 		const releaseWatcher = folderWatcher.acquire(userEmail, Number(userMid));
 
 		const keepAlive = setInterval(() => {
@@ -181,6 +186,7 @@ export class ImapStreamService {
 			timers.clear();
 			unsubscribeHub();
 			releaseWatcher();
+			closePresence();
 
 			// Unbind all listeners from imapService to prevent memory leaks
 			imapService.offNewMessage(onNewMsg);
@@ -191,6 +197,29 @@ export class ImapStreamService {
 		req.on("close", cleanup);
 		res.on("close", cleanup);
 		res.on("finish", cleanup);
+	}
+
+	ping(req: Request, res: Response) {
+		try {
+			const { connectionId } = requireIdentity(req);
+			const body = (req.body ?? {}) as Record<string, unknown>;
+			const tabId = readTabId(body.tabId);
+			if (!tabId) {
+				throw new Error("A valid tabId is required");
+			}
+			const snapshot = streamPresence.report(connectionId, {
+				tabId,
+				visible: body.visible !== false,
+				folder: readFolder(body.folder),
+			});
+			const watching = folderWatcher.status(connectionId);
+			return sendSuccess(res, {
+				level: snapshot.level,
+				watching: watching !== null && !watching.suspended,
+			});
+		} catch (error) {
+			return sendError(res, error);
+		}
 	}
 }
 

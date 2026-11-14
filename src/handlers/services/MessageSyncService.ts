@@ -43,7 +43,10 @@ export interface SyncDelta {
 }
 
 export class MessageSyncService {
-	private readonly inFlight = new Map<string, Promise<SyncDelta>>();
+	private readonly inFlight = new Map<
+		string,
+		{ startedAt: number; task: Promise<SyncDelta> }
+	>();
 
 	async getPage(
 		imap: ImapService,
@@ -51,11 +54,19 @@ export class MessageSyncService {
 		path: string,
 		offset: number,
 		limit: number,
+		options: { stored?: boolean } = {},
 	) {
 		const mailbox = await mailboxStorageService.ensureMailbox(
 			connectionId,
 			path,
 		);
+
+		if (options.stored) {
+			const stored = await this.storedPage(mailbox, offset, limit);
+			if (stored) {
+				return stored;
+			}
+		}
 
 		return imap.withMailbox(path, async (box) => {
 			const { exists, uidNext, uidValidity, highestModseq } = box.info;
@@ -104,6 +115,33 @@ export class MessageSyncService {
 		});
 	}
 
+	private async storedPage(mailbox: MailboxEntity, offset: number, limit: number) {
+		const synced =
+			mailbox.synced_uid_next !== null &&
+			mailbox.synced_uid_next !== undefined &&
+			mailbox.uid_next !== null &&
+			mailbox.uid_next !== undefined &&
+			mailbox.uid_validity !== null &&
+			mailbox.uid_validity !== undefined;
+		if (!synced) {
+			return null;
+		}
+
+		const total = Number(mailbox.total_count);
+		const rows = await messageStorageService.getPage(mailbox.id, offset, limit);
+		if (rows.length < limit && offset + rows.length < total) {
+			return null;
+		}
+
+		return {
+			emails: rows.map((row) => messageStorageService.toEmail(row)).reverse(),
+			totalCount: total,
+			hasMore: offset + rows.length < total,
+			uidNext: Number(mailbox.uid_next),
+			uidValidity: Number(mailbox.uid_validity),
+		};
+	}
+
 	async readStored(
 		connectionId: number,
 		path: string,
@@ -122,25 +160,35 @@ export class MessageSyncService {
 		imap: ImapService,
 		connectionId: number,
 		path: string,
-		afterChange = false,
+		after: boolean | number = false,
 	): Promise<SyncDelta> {
 		const key = `${connectionId}:${path}`;
+		const since = after === true ? Date.now() : after === false ? null : after;
+		const covers = (run: { startedAt: number }) =>
+			since === null || run.startedAt > since;
+
 		const running = this.inFlight.get(key);
 		if (running) {
-			if (!afterChange) {
-				return running;
+			if (covers(running)) {
+				return running.task;
 			}
-			await running.catch(() => undefined);
+			await running.task.catch(() => undefined);
 			const next = this.inFlight.get(key);
-			if (next) {
-				return next;
+			if (next && covers(next)) {
+				return next.task;
 			}
 		}
-		const task = this.runSync(imap, connectionId, path).finally(() => {
-			this.inFlight.delete(key);
-		});
-		this.inFlight.set(key, task);
-		return task;
+
+		const entry = {
+			startedAt: Date.now(),
+			task: this.runSync(imap, connectionId, path).finally(() => {
+				if (this.inFlight.get(key) === entry) {
+					this.inFlight.delete(key);
+				}
+			}),
+		};
+		this.inFlight.set(key, entry);
+		return entry.task;
 	}
 
 	private async runSync(

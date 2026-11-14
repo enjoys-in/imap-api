@@ -35,6 +35,7 @@ interface LoadEmailsQuery {
 	page?: string;
 	offset?: string;
 	limit?: string;
+	source?: string;
 }
 
 interface TransferRequestBody {
@@ -104,6 +105,7 @@ export class ImapEmailService {
 				mailbox.path,
 				offset,
 				limit,
+				{ stored: query.source === "stored" },
 			);
 			const cleanObject = cleanBigIntJson(emails);
 			const enrichedEmails = enrichEmailList(

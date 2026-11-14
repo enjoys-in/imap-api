@@ -1,42 +1,59 @@
-import { Logging } from "@/logs";
 import type { MailboxEntity } from "@/factory/entities";
+import { Logging } from "@/logs";
 import { imapCache } from "../cache/ImapCacheService";
 import { formatImapError } from "../helpers/error.helper";
+import { getFolderSpecial } from "../helpers/folder.helper";
 import { getAuthenticatedImapService } from "../helpers/session.helper";
 import { imapEventHub } from "./ImapEventHub";
-import type { FolderStatus } from "./ImapService";
+import type { FolderStatus, ImapService } from "./ImapService";
 import { ImapStreamEvent } from "./ImapStreamEvent";
 import { mailboxStorageService } from "./MailboxStorageService";
 import { messageMutationService } from "./MessageMutationService";
 import { messageSyncService } from "./MessageSyncService";
-import { quotaService } from "./QuotaService";
-import { announceDelta } from "./SyncAnnouncer";
+import {
+	type PresenceLevel,
+	type PresenceSnapshot,
+	presenceRank,
+	streamPresence,
+} from "./StreamPresence";
+import { announceSync } from "./SyncAnnouncer";
+import { watchConfig } from "./watchConfig";
 
-const DEFAULT_INTERVAL_MS = 10_000;
-const MIN_INTERVAL_MS = 1_000;
 const MAX_BACKOFF_STEPS = 6;
+const SWEEP_SLACK = 0.9;
+const MIN_GRACE_MS = 1_000;
+const HOT_SPECIALS = new Set(["Inbox", "Drafts", "Sent"]);
 
 export function folderWatchInterval(): number {
-	const raw = process.env.FOLDER_WATCH_INTERVAL_MS;
-	if (raw === undefined || raw.trim() === "") {
-		return DEFAULT_INTERVAL_MS;
-	}
-	const value = Number(raw);
-	if (!Number.isFinite(value) || value <= 0) {
-		return 0;
-	}
-	return Math.max(MIN_INTERVAL_MS, value);
+	return watchConfig().sweepMs;
 }
 
 interface Watch {
 	email: string;
 	connectionId: number;
-	interval: number;
 	subscribers: number;
 	timer: NodeJS.Timeout | null;
 	running: boolean;
 	stopped: boolean;
 	failures: number;
+	lastSweep: number;
+	level: PresenceLevel;
+	wake: boolean;
+	paths: Set<string>;
+	unsubscribe: () => void;
+}
+
+interface Plan {
+	level: PresenceLevel;
+	sweepEvery: number;
+	hotEvery: number;
+	goneInMs: number;
+	snapshot: PresenceSnapshot;
+}
+
+interface PathStatus {
+	path: string;
+	status: FolderStatus["status"];
 }
 
 type CountedFolder = Pick<
@@ -44,7 +61,10 @@ type CountedFolder = Pick<
 	"total_count" | "unseen_count" | "uid_next" | "uid_validity" | "highest_modseq"
 >;
 
-const differs = (row: CountedFolder, status: NonNullable<FolderStatus["status"]>) =>
+const differs = (
+	row: CountedFolder,
+	status: NonNullable<FolderStatus["status"]>,
+) =>
 	Number(row.total_count) !== status.messages ||
 	Number(row.unseen_count) !== status.unseen ||
 	row.uid_next === null ||
@@ -62,25 +82,32 @@ export class FolderWatcher {
 	private readonly watches = new Map<number, Watch>();
 
 	acquire(email: string, connectionId: number): () => void {
-		const interval = folderWatchInterval();
-		if (interval === 0) {
+		if (watchConfig().sweepMs === 0) {
 			return () => undefined;
 		}
 
 		let watch = this.watches.get(connectionId);
 		if (!watch) {
-			watch = {
+			const created: Watch = {
 				email,
 				connectionId,
-				interval,
 				subscribers: 0,
 				timer: null,
 				running: false,
 				stopped: false,
 				failures: 0,
+				lastSweep: 0,
+				level: "active",
+				wake: false,
+				paths: new Set(),
+				unsubscribe: () => undefined,
 			};
-			this.watches.set(connectionId, watch);
-			this.schedule(watch);
+			created.unsubscribe = streamPresence.subscribe(connectionId, (snapshot) =>
+				this.nudge(created, snapshot),
+			);
+			this.watches.set(connectionId, created);
+			this.schedule(created);
+			watch = created;
 		}
 		watch.subscribers++;
 
@@ -106,8 +133,22 @@ export class FolderWatcher {
 		return this.watches.get(connectionId)?.subscribers ?? 0;
 	}
 
+	status(
+		connectionId: number,
+	): { level: PresenceLevel; suspended: boolean } | null {
+		const watch = this.watches.get(connectionId);
+		if (!watch) {
+			return null;
+		}
+		return {
+			level: this.plan(watch).level,
+			suspended: watch.timer === null && !watch.running,
+		};
+	}
+
 	private stop(watch: Watch) {
 		watch.stopped = true;
+		watch.unsubscribe();
 		if (watch.timer) {
 			clearTimeout(watch.timer);
 			watch.timer = null;
@@ -117,12 +158,79 @@ export class FolderWatcher {
 		}
 	}
 
+	private plan(watch: Watch): Plan {
+		const config = watchConfig();
+		const snapshot = streamPresence.snapshot(watch.connectionId);
+		if (config.sweepMs === 0 || snapshot.level === "gone") {
+			return {
+				level: "gone",
+				sweepEvery: 0,
+				hotEvery: 0,
+				goneInMs: 0,
+				snapshot,
+			};
+		}
+		const goneAt =
+			(snapshot.lastSeen ?? 0) + config.pingWindowMs * config.maxMissedWindows;
+		const goneInMs = Math.max(0, goneAt - Date.now());
+		if (snapshot.level === "active") {
+			return {
+				level: "active",
+				sweepEvery: config.sweepMs,
+				hotEvery: config.hotMs,
+				goneInMs,
+				snapshot,
+			};
+		}
+		return {
+			level: snapshot.level,
+			sweepEvery: config.backgroundMs,
+			hotEvery: 0,
+			goneInMs,
+			snapshot,
+		};
+	}
+
+	private nudge(watch: Watch, snapshot: PresenceSnapshot) {
+		if (watch.stopped) {
+			return;
+		}
+		const previous = watch.level;
+		const raised = presenceRank(snapshot.level) > presenceRank(previous);
+		watch.level = snapshot.level;
+		if (snapshot.level === "gone") {
+			return;
+		}
+		if (raised) {
+			watch.lastSweep = 0;
+		}
+		if (presenceRank(snapshot.level) < presenceRank(previous)) {
+			return;
+		}
+		watch.wake = true;
+		if (!watch.running) {
+			this.schedule(watch);
+		}
+	}
+
 	private schedule(watch: Watch) {
 		if (watch.stopped) {
 			return;
 		}
-		const delay =
-			watch.interval * Math.min(1 + watch.failures, MAX_BACKOFF_STEPS);
+		const plan = this.plan(watch);
+		watch.level = plan.level;
+		if (watch.timer) {
+			clearTimeout(watch.timer);
+			watch.timer = null;
+		}
+		if (plan.level === "gone") {
+			watch.wake = false;
+			return;
+		}
+		const base = plan.hotEvery || plan.sweepEvery;
+		const paced = base * Math.min(1 + watch.failures, MAX_BACKOFF_STEPS);
+		const delay = watch.wake ? 0 : Math.min(paced, plan.goneInMs + 5);
+		watch.wake = false;
 		watch.timer = setTimeout(() => {
 			watch.timer = null;
 			void this.tick(watch);
@@ -134,15 +242,25 @@ export class FolderWatcher {
 		if (watch.running || watch.stopped) {
 			return;
 		}
+		const plan = this.plan(watch);
+		watch.level = plan.level;
+		if (plan.level === "gone") {
+			return;
+		}
+
 		watch.running = true;
 		try {
-			await this.check(watch);
+			const now = Date.now();
+			const sweep = now - watch.lastSweep >= plan.sweepEvery * SWEEP_SLACK;
+			await this.check(watch, plan, sweep);
+			if (sweep) {
+				watch.lastSweep = now;
+			}
+			await this.restoreFocus(watch, plan.snapshot);
 			watch.failures = 0;
 		} catch (error) {
 			if (watch.failures === 0) {
-				Logging.dev(
-					`[FolderWatcher] ${watch.email}: ${formatImapError(error)}`,
-				);
+				Logging.dev(`[FolderWatcher] ${watch.email}: ${formatImapError(error)}`);
 			}
 			watch.failures++;
 		} finally {
@@ -156,9 +274,40 @@ export class FolderWatcher {
 			imapEventHub.publish(watch.email, event, data);
 	}
 
-	private async check(watch: Watch) {
+	private hotPaths(rows: MailboxEntity[], snapshot: PresenceSnapshot) {
+		const open = new Set(snapshot.openFolders);
+		return rows
+			.filter(
+				(row) =>
+					row.path === "INBOX" ||
+					open.has(row.path) ||
+					HOT_SPECIALS.has(
+						getFolderSpecial(row.name, row.special_use ?? undefined),
+					),
+			)
+			.map((row) => row.path);
+	}
+
+	private async check(watch: Watch, plan: Plan, sweep: boolean) {
 		const { email, connectionId } = watch;
 		const imap = await getAuthenticatedImapService(email, connectionId);
+		const grace = Math.max(MIN_GRACE_MS, plan.hotEvery || plan.sweepEvery);
+
+		if (!sweep) {
+			const rows = await mailboxStorageService.getMailboxes(connectionId);
+			watch.paths = new Set(rows.map((row) => row.path));
+			const wanted = this.hotPaths(rows, plan.snapshot);
+			if (wanted.length === 0) {
+				return;
+			}
+			const statuses = await imap.pathStatuses(wanted);
+			if (watch.stopped) {
+				return;
+			}
+			await this.syncDiffering(watch, imap, rows, statuses, new Set(), grace);
+			return;
+		}
+
 		const listed = await imap.folderStatuses();
 		if (watch.stopped) {
 			return;
@@ -205,26 +354,63 @@ export class FolderWatcher {
 			}
 		}
 
+		watch.paths = new Set(rows.map((row) => row.path));
+		await this.syncDiffering(
+			watch,
+			imap,
+			rows,
+			listed.map(({ box, status }) => ({ path: box.path, status })),
+			new Set(created.map(({ box }) => box.path)),
+			grace,
+		);
+	}
+
+	private async syncDiffering(
+		watch: Watch,
+		imap: ImapService,
+		rows: MailboxEntity[],
+		statuses: PathStatus[],
+		createdPaths: Set<string>,
+		grace: number,
+	) {
 		const byPath = new Map(rows.map((row) => [row.path, row]));
-		const createdPaths = new Set(created.map(({ box }) => box.path));
-		for (const { box, status } of listed) {
+		for (const { path, status } of statuses) {
 			if (!status || watch.stopped) {
 				continue;
 			}
-			const row = byPath.get(box.path);
+			const row = byPath.get(path);
 			if (row && !differs(row, status)) {
 				continue;
 			}
-			if (messageMutationService.isBusy(connectionId, box.path, watch.interval)) {
+			if (messageMutationService.isBusy(watch.connectionId, path, grace)) {
 				continue;
 			}
-			await this.syncFolder(watch, imap, box.path, row, createdPaths.has(box.path));
+			await this.syncFolder(watch, imap, path, row, createdPaths.has(path));
+		}
+	}
+
+	private async restoreFocus(watch: Watch, snapshot: PresenceSnapshot) {
+		const wanted =
+			snapshot.focusFolder && watch.paths.has(snapshot.focusFolder)
+				? snapshot.focusFolder
+				: "INBOX";
+		if (!watch.paths.has(wanted) || watch.stopped) {
+			return;
+		}
+		try {
+			const imap = await getAuthenticatedImapService(
+				watch.email,
+				watch.connectionId,
+			);
+			await imap.focus(wanted);
+		} catch {
+			return;
 		}
 	}
 
 	private async syncFolder(
 		watch: Watch,
-		imap: Awaited<ReturnType<typeof getAuthenticatedImapService>>,
+		imap: ImapService,
 		path: string,
 		before: CountedFolder | undefined,
 		isNew: boolean,
@@ -232,24 +418,21 @@ export class FolderWatcher {
 		const { email, connectionId } = watch;
 		const delta = await messageSyncService.syncMailbox(imap, connectionId, path);
 
-		const changed = delta.added.length > 0 || delta.removed.length > 0;
-		const quota = changed
-			? await quotaService
-					.refresh(imap, email, connectionId, "INBOX")
-					.catch(() => null)
-			: null;
-
-		await imapCache.invalidateMailboxes(email);
-		for (const uid of delta.removed) {
-			await imapCache.invalidateEmailBody(email, path, uid);
-		}
-
+		const publish = this.publish(watch);
+		const announced = await announceSync(
+			{
+				imap,
+				email,
+				connectionId,
+				publish,
+				isClosed: () => watch.stopped,
+			},
+			delta,
+		);
 		if (watch.stopped) {
 			return;
 		}
 
-		const publish = this.publish(watch);
-		const announced = announceDelta(publish, delta, quota);
 		const countsMoved =
 			!before ||
 			Number(before.total_count) !== delta.totalCount ||
@@ -263,7 +446,7 @@ export class FolderWatcher {
 				totalCount: delta.totalCount,
 				unreadCount: delta.unseenCount,
 				messages: [],
-				quota,
+				quota: null,
 			});
 		}
 	}

@@ -72,6 +72,7 @@ router.delete("/emails/:uid", ImapController.moveToTrash);
 router.post("/send-email", ImapController.sendEmail);
 router.get("/quota", ImapController.getQuota);
 router.get("/stream", ImapController.streamEvents);
+router.post("/stream/ping", ImapController.streamPing);
 
 // ── Automatic Replies / Vacation Responder (RFC 3834 / RFC 5230) ──
 router.get("/automatic-replies", ImapController.getAutomaticReplies);

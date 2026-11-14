@@ -446,42 +446,63 @@ export class ImapService {
 			lock.release();
 		}
 	}
+	private async readStatus(
+		path: string,
+		withModseq: boolean,
+	): Promise<FolderStatus["status"]> {
+		try {
+			const found = await this.client.status(path, {
+				messages: true,
+				unseen: true,
+				uidNext: true,
+				uidValidity: true,
+				...(withModseq ? { highestModseq: true } : {}),
+			});
+			if (!found) {
+				return null;
+			}
+			return {
+				messages: found.messages ?? 0,
+				unseen: found.unseen ?? 0,
+				uidNext: found.uidNext ?? 0,
+				uidValidity: Number(found.uidValidity ?? 0),
+				highestModseq: found.highestModseq ? String(found.highestModseq) : null,
+			};
+		} catch {
+			return null;
+		}
+	}
 	async folderStatuses(): Promise<FolderStatus[]> {
 		const withModseq = this.client.capabilities.has("CONDSTORE");
 		const boxes = await this.client.list();
 		const result: FolderStatus[] = [];
 		for (const box of boxes) {
-			if (!this.isSelectable(box)) {
-				result.push({ box, status: null });
-				continue;
-			}
-			try {
-				const found = await this.client.status(box.path, {
-					messages: true,
-					unseen: true,
-					uidNext: true,
-					uidValidity: true,
-					...(withModseq ? { highestModseq: true } : {}),
-				});
-				result.push({
-					box,
-					status: found
-						? {
-								messages: found.messages ?? 0,
-								unseen: found.unseen ?? 0,
-								uidNext: found.uidNext ?? 0,
-								uidValidity: Number(found.uidValidity ?? 0),
-								highestModseq: found.highestModseq
-									? String(found.highestModseq)
-									: null,
-							}
-						: null,
-				});
-			} catch {
-				result.push({ box, status: null });
-			}
+			result.push({
+				box,
+				status: this.isSelectable(box)
+					? await this.readStatus(box.path, withModseq)
+					: null,
+			});
 		}
 		return result;
+	}
+	async pathStatuses(
+		paths: string[],
+	): Promise<{ path: string; status: FolderStatus["status"] }[]> {
+		const withModseq = this.client.capabilities.has("CONDSTORE");
+		const result: { path: string; status: FolderStatus["status"] }[] = [];
+		for (const path of paths) {
+			result.push({ path, status: await this.readStatus(path, withModseq) });
+		}
+		return result;
+	}
+	async focus(path: string): Promise<void> {
+		const current = this.client.mailbox;
+		if (current && typeof current === "object" && current.path === path) {
+			return;
+		}
+		const lock = await this.client.getMailboxLock(path, {});
+		lock.release();
 	}
 	async listUnseenOnly() {
 		return this.client.search({ seen: false }, { uid: true });
@@ -1094,14 +1115,15 @@ export class ImapService {
 		headers?: Record<string, string | string[] | undefined>;
 	} | null> {
 		try {
-			await this.client.mailboxOpen(mailbox);
-			const status = await this.client.status(mailbox, { messages: true });
-			const total = status.messages || 0;
-			if (total === 0) return null;
-
-			const msg = await this.client.fetchOne(`${total}`, {
-				envelope: true,
-				headers: true,
+			const msg = await this.inMailbox(mailbox, async (client) => {
+				const selected = client.mailbox;
+				const total =
+					selected && typeof selected === "object" ? selected.exists : 0;
+				if (total === 0) return null;
+				return client.fetchOne(`${total}`, {
+					envelope: true,
+					headers: true,
+				});
 			});
 			if (!msg || !msg.envelope) return null;
 
