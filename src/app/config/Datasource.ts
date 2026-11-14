@@ -4,13 +4,20 @@ import { __CONFIG__ } from ".";
 
 // Patch TypeORM PostgresQueryRunner to sequence concurrent queries on the same connection,
 // resolving pg@8.14+ / pg@9 DeprecationWarning: "Calling client.query() when the client is already executing a query"
+interface QueryRunnerWithQueue extends PostgresQueryRunner {
+	_queryQueue?: Promise<unknown>;
+}
+
 const originalPostgresQuery = PostgresQueryRunner.prototype.query;
-PostgresQueryRunner.prototype.query = function (this: any, ...args: any[]) {
+PostgresQueryRunner.prototype.query = function (
+	this: QueryRunnerWithQueue,
+	...args: Parameters<typeof originalPostgresQuery>
+) {
 	const next = (this._queryQueue || Promise.resolve())
 		.catch(() => {})
-		.then(() => (originalPostgresQuery as any).apply(this, args));
+		.then(() => Reflect.apply(originalPostgresQuery, this, args));
 	this._queryQueue = next;
-	return next;
+	return next as ReturnType<typeof originalPostgresQuery>;
 };
 
 const DB_OPTIONS = {

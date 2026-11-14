@@ -633,19 +633,17 @@ export class ImapAuthService {
 			const result = await autodiscoverConfig(email);
 
 			if (!result.success || !result.imap || !result.smtp) {
-				return sendSuccess(
+				return sendError(
 					res,
-					result,
-					result.message || "No autodiscover settings found for domain",
-					{
-						found: false,
-						...result,
-					},
+					result.message ||
+						`No email configuration found for domain "${result.domain}"`,
+					undefined,
+					404,
 				);
 			}
 
 			const wantsXml =
-				req.path.endsWith(".xml") ||
+				(req.path.endsWith(".xml") && !req.headers.accept?.includes("json")) ||
 				req.query?.format === "xml" ||
 				(Boolean(req.headers.accept?.includes("xml")) &&
 					!req.headers.accept?.includes("json"));
@@ -723,12 +721,10 @@ export class ImapAuthService {
 				return;
 			}
 
-			return sendSuccess(res, result, "Autodiscovery successful", {
-				data: result,
-				...result,
-			});
+			// Standard JSON response: success: true (200), message: string, result: all data
+			return sendSuccess(res, result, "Autodiscovery successful");
 		} catch (error) {
-			return sendError(res, error, "Autodiscovery failed");
+			return sendError(res, error, "Autodiscovery failed", 500);
 		}
 	}
 }

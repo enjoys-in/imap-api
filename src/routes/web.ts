@@ -9,53 +9,53 @@ const router = Router();
 
 // Public Autodiscover & Autoconfig endpoints
 router.get(
-  ["/autodiscover", "/Autodiscover", "/autodiscover.json", "/autodiscover.xml"],
-  ImapController.autodiscover,
+	["/autodiscover", "/Autodiscover", "/autodiscover.json", "/autodiscover.xml"],
+	ImapController.autodiscover,
 );
 router.post(
-  ["/autodiscover", "/Autodiscover", "/autodiscover.xml"],
-  ImapController.autodiscover,
+	["/autodiscover", "/Autodiscover", "/autodiscover.xml"],
+	ImapController.autodiscover,
 );
 router.get(
-  ["/autodiscover/autodiscover.xml", "/Autodiscover/Autodiscover.xml"],
-  ImapController.autodiscover,
+	["/autodiscover/autodiscover.xml", "/Autodiscover/Autodiscover.xml"],
+	ImapController.autodiscover,
 );
 router.post(
-  ["/autodiscover/autodiscover.xml", "/Autodiscover/Autodiscover.xml"],
-  ImapController.autodiscover,
+	["/autodiscover/autodiscover.xml", "/Autodiscover/Autodiscover.xml"],
+	ImapController.autodiscover,
 );
 router.get(
-  ["/mail/config-v1.1.xml", "/.well-known/autoconfig/mail/config-v1.1.xml"],
-  ImapController.autodiscover,
+	["/mail/config-v1.1.xml", "/.well-known/autoconfig/mail/config-v1.1.xml"],
+	ImapController.autodiscover,
 );
 
-// Direct Root Setup & Authentication Aliases (resilience for root callers)
-router.post(
-  `/api/${__CONFIG__.APP.API_VERSION}/imap/setup-stream`,
-  ImapController.setupStream,
-);
-router.post(
-  `/api/${__CONFIG__.APP.API_VERSION}/imap/authenticate`,
-  ImapController.loginUser,
-);
-
-// Versioned with legacy /imap prefix: /api/v1/imap/*
+// 1. Versioned with legacy /imap prefix: /api/v1/imap/*
 router.use(
-  `/api/${__CONFIG__.APP.API_VERSION}/imap`,
-  JwtAuth.validateUser,
-  ApiRoutes,
+	`/api/${__CONFIG__.APP.API_VERSION}/imap`,
+	JwtAuth.validateUser,
+	ApiRoutes,
 );
+
+// 2. Standard versioned API: /api/v1/*
+router.use(
+	`/api/${__CONFIG__.APP.API_VERSION}`,
+	JwtAuth.validateUser,
+	ApiRoutes,
+);
+
+// 3. Fallback unversioned API: /api/*
+router.use("/api", JwtAuth.validateUser, ApiRoutes);
 
 router.use("*", (req: Request, res: Response) => {
-  throw new HttpException({
-    name: "NOT_FOUND",
-    message: "Route Not Found",
-    stack: {
-      info: "Forbidden Resource",
-      path: req.baseUrl,
-      method: req.method,
-    },
-  });
+	throw new HttpException({
+		name: "NOT_FOUND",
+		message: "Route Not Found",
+		stack: {
+			info: "Forbidden Resource",
+			path: req.baseUrl,
+			method: req.method,
+		},
+	});
 });
 
 export default router;
