@@ -14,7 +14,7 @@ export class ImapCacheService {
   private engine: ICacheEngine;
 
   constructor(engine?: ICacheEngine) {
-    this.engine = engine || CacheEngineFactory.create();
+    this.engine = engine || CacheEngineFactory.create("rocksdb");
   }
 
   /**
