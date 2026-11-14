@@ -1,3 +1,5 @@
+import { VAPID, type VapidConfig } from "./vapidKeys";
+
 export type PushAudience = "all" | "direct" | "vip" | "high_priority";
 
 export const PUSH_AUDIENCES: readonly PushAudience[] = [
@@ -7,11 +9,7 @@ export const PUSH_AUDIENCES: readonly PushAudience[] = [
 	"high_priority",
 ];
 
-export interface VapidConfig {
-	publicKey: string;
-	privateKey: string;
-	subject: string;
-}
+export type { VapidConfig } from "./vapidKeys";
 
 const DEFAULT_WATCH_MS = 60_000;
 const MIN_WATCH_MS = 1_000;
@@ -27,13 +25,8 @@ const DEFAULT_ENDPOINT_HOSTS = [
 ];
 
 export function vapidConfig(): VapidConfig | null {
-	const publicKey = process.env.VAPID_PUBLIC_KEY?.trim();
-	const privateKey = process.env.VAPID_PRIVATE_KEY?.trim();
-	const subject = process.env.VAPID_SUBJECT?.trim();
-	if (!publicKey || !privateKey || !subject) {
-		return null;
-	}
-	return { publicKey, privateKey, subject };
+	const { publicKey, privateKey, subject } = VAPID;
+	return publicKey && privateKey && subject ? VAPID : null;
 }
 
 export function pushWatchInterval(): number {
