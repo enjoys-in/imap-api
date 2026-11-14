@@ -10,12 +10,22 @@ export function sendSuccess(
 	extra: Record<string, any> = {},
 	statusCode = 200,
 ): void {
+	// Every non-stream route answers `{ message, result, success }` with `result: any`.
+	// Extra fields (e.g. the session `user`/`token`) are merged INTO `result`, but only
+	// when it is an object or empty. Arrays and primitives are passed through untouched:
+	// spreading `[a, b]` would turn it into `{ "0": a, "1": b }`. In that case the
+	// extras stay as top-level siblings, exactly as before.
+	const hasExtra = Object.keys(extra).length > 0;
+	const isPlainObject =
+		result !== null && typeof result === "object" && !Array.isArray(result);
+	const mergeIntoResult = hasExtra && (isPlainObject || result == null);
+
 	res
 		.status(statusCode)
 		.json({
 			message,
-			result,
-			...extra,
+			result: mergeIntoResult ? { ...result, ...extra } : result,
+			...(hasExtra && !mergeIntoResult ? extra : {}),
 			success: true,
 		})
 		.end();

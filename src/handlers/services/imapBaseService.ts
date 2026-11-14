@@ -1,5 +1,6 @@
 import { createTransport } from "nodemailer";
 import { ImapFactory } from "../factory/ImapFactory";
+import { formatImapError } from "../helpers/error.helper";
 import { ImapService } from "./ImapService";
 import { mailboxStorageService } from "./MailboxStorageService";
 
@@ -95,10 +96,7 @@ class ImapBaseService {
 						pass: config.smtp_password,
 					},
 				});
-				const response = await transport.verify();
-				if (!response) {
-					smtp_configured = false;
-				}
+				smtp_configured = Boolean(await transport.verify());
 			}
 
 			return {
@@ -107,11 +105,12 @@ class ImapBaseService {
 				data,
 			};
 		} catch (error: any) {
-			return {
-				imap_configured,
-				smtp_configured,
-				data,
-			};
+			// Never report a half-finished setup as success: callers must see the
+			// failure so they do not create a session (cookie/token) for it.
+			const stage = imap_configured
+				? "SMTP verification failed"
+				: "IMAP setup failed";
+			throw new Error(`${stage}: ${formatImapError(error)}`);
 		}
 	}
 	async insertIntoDb(config: Partial<ImapUsersEmailConnectionEntity>) {

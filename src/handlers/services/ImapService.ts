@@ -169,13 +169,36 @@ export class ImapService {
 		const response: any[] = [];
 		let id = 1;
 		for (const mailbox of mailboxList) {
-			const searchResult = await this.listUnseenOnly();
-			const data = await this.selectMailbox(mailbox.path);
+			let totalCount = 0;
+			let unseenCount = 0;
+
+			// \Noselect / \NonExistent entries (e.g. hierarchy parents) cannot be
+			// opened; they have no messages, so report zero instead of failing the sync.
+			const flags = Array.from(mailbox.flags ?? [], (f) => String(f).toLowerCase());
+			const selectable =
+				!flags.includes("\\noselect") && !flags.includes("\\nonexistent");
+
+			if (selectable) {
+				// Select first, then count: SEARCH only applies to the selected mailbox.
+				// Only counts are needed here, so no message FETCH is issued.
+				const lock = await this.client.getMailboxLock(mailbox.path, {});
+				try {
+					const opened = this.client.mailbox;
+					totalCount = opened ? opened.exists : 0;
+					if (totalCount > 0) {
+						const unseen = await this.listUnseenOnly();
+						unseenCount = Array.isArray(unseen) ? unseen.length : 0;
+					}
+				} finally {
+					lock.release();
+				}
+			}
+
 			response.push({
 				id,
 				...mailbox,
-				total_count: data.totalCount,
-				unseen_count: Array.isArray(searchResult) ? searchResult.length : 0,
+				total_count: totalCount,
+				unseen_count: unseenCount,
 			});
 			id++;
 		}
@@ -207,8 +230,22 @@ export class ImapService {
 			mailboxId,
 			flags,
 		} = await this.client.mailboxOpen(mailbox);
-		const lock = await this.client.getMailboxLock(mailbox, {});
 		const emails = [];
+
+		// An empty mailbox has no valid sequence numbers (not even "*"), so strict
+		// servers such as Gluon reject `FETCH 1:*` with `BAD no such message`.
+		if (!totalCount) {
+			return {
+				emails,
+				totalCount: 0,
+				hasMore: false,
+				uidNext,
+				uidValidity,
+				flags,
+			};
+		}
+
+		const lock = await this.client.getMailboxLock(mailbox, {});
 		const endSeq = totalCount - start;
 		const startSeq = Math.max(endSeq - 50 + 1, 1);
 

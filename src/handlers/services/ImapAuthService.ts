@@ -12,6 +12,7 @@ import { imapCache } from "../cache/ImapCacheService";
 import { ImapFactory } from "../factory/ImapFactory";
 import { autodiscoverConfig } from "../helpers/autodiscover.helper";
 import { enrichEmailList, enrichMailboxList } from "../helpers/email.helper";
+import { formatImapError } from "../helpers/error.helper";
 import { sendError, sendSuccess } from "../helpers/response.helper";
 import { getAuthenticatedImapService } from "../helpers/session.helper";
 import imapBaseService from "./imapBaseService";
@@ -29,43 +30,6 @@ function safeDecryptPassword(rawPassword?: string): string {
   } catch {
     return rawPassword;
   }
-}
-
-
-function formatImapError(err: any): string {
-  if (!err) return "Unknown error";
-  if (typeof err === "string") return err;
-
-  const parts: string[] = [];
-  const nested: any[] = Array.isArray(err.errors) ? err.errors : [];
-
-  if (nested.length > 0) {
-    const targetsByCode = new Map<string, string[]>();
-    for (const e of nested) {
-      const code = e?.code || e?.name || "ERROR";
-      const target = e?.address
-        ? `${e.address}${e.port ? `:${e.port}` : ""}`
-        : e?.message || "unknown";
-      targetsByCode.set(code, [...(targetsByCode.get(code) ?? []), target]);
-    }
-    parts.push(
-      [...targetsByCode]
-        .map(([code, targets]) => `${code} ${targets.join(", ")}`)
-        .join("; "),
-    );
-  } else if (err.message) {
-    parts.push(err.message);
-  }
-
-  const summary = parts.join(" ");
-  if (err.code && !summary.includes(String(err.code))) {
-    parts.push(`code: ${err.code}`);
-  }
-  if (err.responseText && !summary.includes(String(err.responseText))) {
-    parts.push(`server: ${err.responseText}`);
-  }
-
-  return parts.length > 0 ? parts.join(" | ") : err.name || String(err);
 }
 
 export class ImapAuthService {
@@ -109,6 +73,16 @@ export class ImapAuthService {
       const config = imapBaseService.configDTO(isUser) as ImapRequestBody;
       const userMailboxes = await imapBaseService.loginUser(config, isUser.id);
 
+      const enrichedMailboxes = enrichMailboxList(
+        userMailboxes,
+        `acc-${isUser.id}`,
+      );
+
+      // Cache folder list with 30s TTL
+      await imapCache.setMailboxes(username, enrichedMailboxes, 30);
+
+      // Everything that can fail has succeeded: only now issue the session
+      // (token + cookie) and report success.
       const signJWT = utils.signJWT(
         {
           display_name: isUser.display_name,
@@ -129,25 +103,21 @@ export class ImapAuthService {
         expires: new Date(Date.now() + 60 * 24 * 60 * 60 * 1000),
       });
 
-      const enrichedMailboxes = enrichMailboxList(
-        userMailboxes,
-        `acc-${isUser.id}`,
-      );
-
-      // Cache folder list with 30s TTL
-      await imapCache.setMailboxes(username, enrichedMailboxes, 30);
-
-      return sendSuccess(res, userMailboxes, "Authenticated", {
-        user: {
-          mid: isUser.id,
-          email: username,
-          display_name: isUser.display_name,
-          domain_name: domain,
-          role: AppRoles.USER,
+      return sendSuccess(
+        res,
+        {
+          user: {
+            mid: isUser.id,
+            email: username,
+            display_name: isUser.display_name,
+            domain_name: domain,
+            role: AppRoles.USER,
+          },
+          mailboxes: enrichedMailboxes,
+          token: signJWT,
         },
-        mailboxes: enrichedMailboxes,
-        token: signJWT,
-      });
+        "Authenticated",
+      );
     } catch (error) {
       return sendError(res, error);
     }
@@ -207,6 +177,11 @@ export class ImapAuthService {
         await mailboxStorageService.saveMailboxes(isUser.id, data);
       }
 
+      const enrichedMailboxes = enrichMailboxList(data, `acc-${isUser.id}`);
+      await imapCache.setMailboxes(config.imap_username, enrichedMailboxes, 30);
+
+      // Everything that can fail has succeeded: only now issue the session
+      // (token + cookie) and report success.
       const domain = MiscellaneousHelper.getOnlyDomainFromEmail(
         req.body.imap_username,
       );
@@ -231,21 +206,22 @@ export class ImapAuthService {
         expires: new Date(Date.now() + 60 * 24 * 60 * 60 * 1000),
       });
 
-      const enrichedMailboxes = enrichMailboxList(data, `acc-${isUser.id}`);
-      await imapCache.setMailboxes(config.imap_username, enrichedMailboxes, 30);
-
-      return sendSuccess(res, data, "Authenticated", {
-        user: {
-          mid: isUser.id,
-          email: req.body.imap_username,
-          display_name:
-            isUser.display_name || req.body.imap_username.split("@")[0],
-          domain_name: domain,
-          role: AppRoles.USER,
+      return sendSuccess(
+        res,
+        {
+          user: {
+            mid: isUser.id,
+            email: req.body.imap_username,
+            display_name:
+              isUser.display_name || req.body.imap_username.split("@")[0],
+            domain_name: domain,
+            role: AppRoles.USER,
+          },
+          mailboxes: enrichedMailboxes,
+          token: signJWT,
         },
-        mailboxes: enrichedMailboxes,
-        token: signJWT,
-      });
+        "Authenticated",
+      );
     } catch (error) {
       return sendError(res, error);
     }
@@ -428,14 +404,25 @@ export class ImapAuthService {
         70,
       );
 
-      const rawMailboxes = await imap.syncFolders();
-      let isUser = await imapBaseService.getUserEmail(config.imap_username);
-      const userMid = isUser?.id || 1;
-      const enrichedMailboxes = enrichMailboxList(
-        rawMailboxes,
-        `acc-${userMid}`,
-      );
-      await imapCache.setMailboxes(config.imap_username, enrichedMailboxes, 30);
+      let rawMailboxes: Awaited<ReturnType<typeof imap.syncFolders>>;
+      let userMid: number | string;
+      let enrichedMailboxes: ReturnType<typeof enrichMailboxList>;
+      try {
+        rawMailboxes = await imap.syncFolders();
+        const isUser = await imapBaseService.getUserEmail(config.imap_username);
+        userMid = isUser?.id || 1;
+        enrichedMailboxes = enrichMailboxList(rawMailboxes, `acc-${userMid}`);
+        await imapCache.setMailboxes(config.imap_username, enrichedMailboxes, 30);
+      } catch (syncErr: any) {
+        sendLog(
+          "mailbox_sync",
+          "error",
+          `Mailbox sync failed: ${formatImapError(syncErr)}`,
+          70,
+        );
+        res.end();
+        return;
+      }
 
       sendLog(
         "mailbox_sync",
@@ -520,14 +507,8 @@ export class ImapAuthService {
         "60d",
       );
 
-      res.cookie("access_token", signJWT, {
-        httpOnly: true,
-        secure: __CONFIG__.APP.APP_ENV === "PROD",
-        sameSite: __CONFIG__.APP.APP_ENV === "PROD" ? "none" : "strict",
-        maxAge: 60 * 24 * 60 * 60 * 1000,
-        expires: new Date(Date.now() + 60 * 24 * 60 * 60 * 1000),
-      });
-
+      // No cookie here: the SSE headers were already flushed, so Set-Cookie can
+      // no longer be sent. The client takes the token from the "complete" event.
       sendLog(
         "complete",
         "success",
@@ -547,7 +528,7 @@ export class ImapAuthService {
       );
       res.end();
     } catch (error: any) {
-      sendLog("error", "error", `Setup error: ${error.message || error}`, 100);
+      sendLog("error", "error", `Setup error: ${formatImapError(error)}`, 100);
       res.end();
     }
   }
