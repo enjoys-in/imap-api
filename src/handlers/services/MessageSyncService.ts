@@ -35,6 +35,7 @@ export interface SyncDelta {
 	stored: number;
 	removed: number[];
 	updated: { uid: number; flags: string[] }[];
+	previousTotal: number;
 	totalCount: number;
 	unseenCount: number;
 	uidNext: number;
@@ -197,6 +198,7 @@ export class MessageSyncService {
 				stored: pulled.length,
 				removed,
 				updated,
+				previousTotal: Number(mailbox.total_count),
 				totalCount: exists,
 				unseenCount: unseen.length,
 				uidNext,

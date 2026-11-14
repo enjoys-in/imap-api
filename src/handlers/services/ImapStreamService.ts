@@ -3,25 +3,17 @@ import type { Request, Response } from "express";
 import { imapCache } from "../cache/ImapCacheService";
 import { ImapFactory } from "../factory/ImapFactory";
 import { formatImapError } from "../helpers/error.helper";
+import { folderWatcher } from "./FolderWatcher";
 import { imapEventHub } from "./ImapEventHub";
+import { ImapStreamEvent } from "./ImapStreamEvent";
 import { messageSyncService } from "./MessageSyncService";
 import { quotaService } from "./QuotaService";
+import { announceDelta } from "./SyncAnnouncer";
 import { vacationSenderService } from "./VacationSenderService";
 
-export enum ImapStreamEvent {
-	CONNECTED = "connected",
-	MAILBOX_CHANGE = "mailbox:change",
-	MAILBOX_EXPUNGE = "mailbox:expunge",
-	MESSAGE_FLAGS = "message:flags",
-	WARNING = "warning",
-	SYNC_START = "sync:start",
-	SYNC_FOLDER = "sync:folder",
-	SYNC_COMPLETE = "sync:complete",
-}
+export { ImapStreamEvent };
 
 const SYNC_DEBOUNCE_MS = 300;
-const NEW_MESSAGE_PREVIEW_LIMIT = 5;
-const EXPUNGE_EVENT_LIMIT = 50;
 
 export class ImapStreamService {
 	/**
@@ -95,68 +87,7 @@ export class ImapStreamService {
 					return;
 				}
 
-				if (delta.added.length > 0) {
-					sendEvent(ImapStreamEvent.MAILBOX_CHANGE, {
-						path,
-						count: delta.totalCount,
-						prevCount: Math.max(0, delta.totalCount - delta.added.length),
-						newCount: delta.added.length,
-						totalCount: delta.totalCount,
-						unreadCount: delta.unseenCount,
-						messages: delta.added
-							.slice(-NEW_MESSAGE_PREVIEW_LIMIT)
-							.map((message) => ({
-								uid: message.uid,
-								from: message.from,
-								subject: message.subject,
-								date: message.date,
-							})),
-						quota,
-					});
-				}
-
-				if (delta.removed.length > 0) {
-					const totals = {
-						path,
-						vanished: false,
-						totalCount: delta.totalCount,
-						unreadCount: delta.unseenCount,
-						quota,
-					};
-					if (delta.removed.length <= EXPUNGE_EVENT_LIMIT) {
-						for (const uid of delta.removed) {
-							sendEvent(ImapStreamEvent.MAILBOX_EXPUNGE, {
-								...totals,
-								uid,
-								removed: delta.removed,
-							});
-						}
-					} else {
-						sendEvent(ImapStreamEvent.MAILBOX_EXPUNGE, {
-							...totals,
-							removed: [],
-							removedCount: delta.removed.length,
-						});
-					}
-				}
-
-				const flagChanges = new Map(
-					delta.updated.map((change) => [change.uid, change.flags]),
-				);
-				for (const [uid, flags] of hints ?? []) {
-					if (!flagChanges.has(uid)) {
-						flagChanges.set(uid, flags);
-					}
-				}
-				for (const [uid, flags] of flagChanges) {
-					sendEvent(ImapStreamEvent.MESSAGE_FLAGS, {
-						path,
-						uid,
-						flags,
-						unreadCount: delta.unseenCount,
-						totalCount: delta.totalCount,
-					});
-				}
+				announceDelta(sendEvent, delta, quota, hints);
 			} catch (error) {
 				Logging.dev(
 					`[ImapStreamService] Sync of ${path} failed: ${formatImapError(error)}`,
@@ -229,6 +160,7 @@ export class ImapStreamService {
 		const unsubscribeHub = imapEventHub.subscribe(userEmail, (event, data) =>
 			sendEvent(event, data),
 		);
+		const releaseWatcher = folderWatcher.acquire(userEmail, Number(userMid));
 
 		const keepAlive = setInterval(() => {
 			if (!res.writableEnded) {
@@ -248,6 +180,7 @@ export class ImapStreamService {
 			}
 			timers.clear();
 			unsubscribeHub();
+			releaseWatcher();
 
 			// Unbind all listeners from imapService to prevent memory leaks
 			imapService.offNewMessage(onNewMsg);

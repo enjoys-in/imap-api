@@ -48,7 +48,46 @@ export interface MutationResult {
 const unique = <T>(items: T[]) => Array.from(new Set(items));
 
 export class MessageMutationService {
+	private readonly active = new Map<string, number>();
+	private readonly settledAt = new Map<string, number>();
+
+	isBusy(connectionId: number, path: string, graceMs: number): boolean {
+		const key = `${connectionId}:${path}`;
+		if ((this.active.get(key) ?? 0) > 0) {
+			return true;
+		}
+		const last = this.settledAt.get(key);
+		return last !== undefined && Date.now() - last < graceMs;
+	}
+
 	async settle(
+		ctx: MutationContext,
+		change: MutationChange,
+	): Promise<MutationResult> {
+		const keys = unique(
+			[change.source?.path, change.target?.path].filter(
+				(path): path is string => !!path,
+			),
+		).map((path) => `${ctx.connectionId}:${path}`);
+		for (const key of keys) {
+			this.active.set(key, (this.active.get(key) ?? 0) + 1);
+		}
+		try {
+			return await this.apply(ctx, change);
+		} finally {
+			for (const key of keys) {
+				const remaining = (this.active.get(key) ?? 1) - 1;
+				if (remaining <= 0) {
+					this.active.delete(key);
+				} else {
+					this.active.set(key, remaining);
+				}
+				this.settledAt.set(key, Date.now());
+			}
+		}
+	}
+
+	private async apply(
 		ctx: MutationContext,
 		change: MutationChange,
 	): Promise<MutationResult> {

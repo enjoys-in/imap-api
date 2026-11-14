@@ -32,6 +32,17 @@ const MESSAGE_QUERY: FetchQueryObject = {
 
 const UID_BATCH = 500;
 
+export interface FolderStatus {
+	box: ListResponse;
+	status: {
+		messages: number;
+		unseen: number;
+		uidNext: number;
+		uidValidity: number;
+		highestModseq: string | null;
+	} | null;
+}
+
 function collectAttachments(
 	structure: MessageStructureObject | undefined,
 	found: AttachmentInfo[],
@@ -434,6 +445,43 @@ export class ImapService {
 		} finally {
 			lock.release();
 		}
+	}
+	async folderStatuses(): Promise<FolderStatus[]> {
+		const withModseq = this.client.capabilities.has("CONDSTORE");
+		const boxes = await this.client.list();
+		const result: FolderStatus[] = [];
+		for (const box of boxes) {
+			if (!this.isSelectable(box)) {
+				result.push({ box, status: null });
+				continue;
+			}
+			try {
+				const found = await this.client.status(box.path, {
+					messages: true,
+					unseen: true,
+					uidNext: true,
+					uidValidity: true,
+					...(withModseq ? { highestModseq: true } : {}),
+				});
+				result.push({
+					box,
+					status: found
+						? {
+								messages: found.messages ?? 0,
+								unseen: found.unseen ?? 0,
+								uidNext: found.uidNext ?? 0,
+								uidValidity: Number(found.uidValidity ?? 0),
+								highestModseq: found.highestModseq
+									? String(found.highestModseq)
+									: null,
+							}
+						: null,
+				});
+			} catch {
+				result.push({ box, status: null });
+			}
+		}
+		return result;
 	}
 	async listUnseenOnly() {
 		return this.client.search({ seen: false }, { uid: true });
